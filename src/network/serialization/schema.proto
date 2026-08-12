@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+enum Priority {
+  LOW = 0;
+  HIGH = 1;
+  CRITICAL = 2;
+}
+
+message TriageSOS {
+  string id = 1;
+  string sender = 2;
+  Priority priority = 3;
+  string medicalNeed = 4;
+  string hazard = 5;
+  uint64 timestamp = 6;
+}
