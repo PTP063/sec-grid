@@ -7,6 +7,8 @@ import type {
 } from './types';
 import { DeduplicationCache } from './DeduplicationCache';
 
+import Peer, { type DataConnection } from 'peerjs';
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const HEARTBEAT_INTERVAL_MS = 2_000;
@@ -16,7 +18,7 @@ const PEER_TIMEOUT_MS = 6_000;  // Slightly longer than heartbeat*2 for jitter t
 // ─── MeshNode ────────────────────────────────────────────────────────────────
 
 /**
- * Event-driven P2P transport node backed by the browser's `BroadcastChannel` API.
+ * Event-driven P2P transport node backed by WebRTC (PeerJS) and `BroadcastChannel`.
  *
  * Responsibilities:
  * - Generates a stable UUID for this browser tab on construction.
@@ -34,12 +36,17 @@ export class MeshNode {
   private readonly channel: BroadcastChannel;
   private readonly cache: DeduplicationCache;
   private readonly peers: Map<string, NodeMetadata>;
+  private readonly webrtcConnections: Map<string, DataConnection>;
 
   private readonly packetListeners: Set<PacketListener<unknown>>;
   private readonly nodeListListeners: Set<NodeListListener>;
+  private readonly peerjsIdListeners: Set<(id: string) => void>;
 
   private readonly heartbeatTimer: ReturnType<typeof setInterval>;
   private readonly pruneTimer: ReturnType<typeof setInterval>;
+
+  public peerjs: Peer | null = null;
+  public peerjsId: string | null = null;
 
   // Track total packets received for telemetry
   public packetsReceived = 0;
@@ -50,17 +57,75 @@ export class MeshNode {
     this.channel = new BroadcastChannel(channelName);
     this.cache = new DeduplicationCache();
     this.peers = new Map();
+    this.webrtcConnections = new Map();
 
     this.packetListeners = new Set();
     this.nodeListListeners = new Set();
+    this.peerjsIdListeners = new Set();
 
     this.channel.onmessage = this.handleIncoming.bind(this);
+
+    // Initialize WebRTC
+    this.initWebRTC();
 
     // Send an immediate heartbeat so sibling tabs see us right away
     this.broadcast(null, 'HEARTBEAT');
 
     this.heartbeatTimer = setInterval(() => this.broadcast(null, 'HEARTBEAT'), HEARTBEAT_INTERVAL_MS);
     this.pruneTimer = setInterval(() => this.pruneSilentPeers(), PRUNE_INTERVAL_MS);
+  }
+
+  private initWebRTC() {
+    this.peerjs = new Peer();
+    
+    this.peerjs.on('open', (id) => {
+      this.peerjsId = id;
+      console.log('[MeshNode] WebRTC Online. ID:', id);
+      for (const listener of this.peerjsIdListeners) {
+        try { listener(id); } catch (err) { console.error('[MeshNode] PeerJsId listener threw:', err); }
+      }
+    });
+
+    this.peerjs.on('connection', (conn) => {
+      this.setupWebRTCConnection(conn);
+    });
+    
+    this.peerjs.on('error', (err) => {
+      console.warn('[MeshNode] WebRTC error:', err);
+    });
+  }
+
+  public onPeerJsId(listener: (id: string) => void): () => void {
+    this.peerjsIdListeners.add(listener);
+    if (this.peerjsId) listener(this.peerjsId);
+    return () => this.peerjsIdListeners.delete(listener);
+  }
+
+  public connectToWebRTCPeer(targetPeerjsId: string) {
+    if (!this.peerjs) return;
+    const conn = this.peerjs.connect(targetPeerjsId);
+    this.setupWebRTCConnection(conn);
+  }
+
+  private setupWebRTCConnection(conn: DataConnection) {
+    conn.on('open', () => {
+      console.log('[MeshNode] WebRTC Connected to:', conn.peer);
+      this.webrtcConnections.set(conn.peer, conn);
+    });
+    
+    conn.on('data', (data) => {
+      // Create a mock MessageEvent to reuse the BroadcastChannel packet handler
+      const event = { data } as MessageEvent;
+      this.handleIncoming(event);
+    });
+
+    conn.on('close', () => {
+      this.webrtcConnections.delete(conn.peer);
+    });
+    
+    conn.on('error', () => {
+      this.webrtcConnections.delete(conn.peer);
+    });
   }
 
   // ── Public broadcast ───────────────────────────────────────────────────────
@@ -72,7 +137,19 @@ export class MeshNode {
       payload,
     };
     this.cache.add(packetId);
+    
+    // Broadcast locally
     this.channel.postMessage(packet);
+    
+    // Broadcast over WebRTC
+    for (const conn of this.webrtcConnections.values()) {
+      try {
+        conn.send(packet);
+      } catch (err) {
+        console.warn('[MeshNode] Failed to send over WebRTC:', err);
+      }
+    }
+
     if (type === 'DATA') this.packetsSent++;
   }
 
@@ -170,7 +247,11 @@ export class MeshNode {
       lastSeen: Date.now(),
       isSelf: false,
     });
-    if (isNew) this.emitNodeList();
+    if (isNew) {
+      this.emitNodeList();
+      // Instantly ack presence to the new peer to bypass background throttling
+      this.broadcast(null, 'HEARTBEAT');
+    }
   }
 
   /**

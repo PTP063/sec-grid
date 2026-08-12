@@ -63,7 +63,7 @@ export interface UseMeshVisualizerReturn {
   edges: MeshFlowEdge[];
 }
 
-// ─── useMeshVisualizer ────────────────────────────────────────────────────────
+  // ─── useMeshVisualizer ────────────────────────────────────────────────────────
 
 /**
  * Manages the MeshNode singleton lifecycle and derives all ReactFlow graph state
@@ -79,7 +79,7 @@ export interface UseMeshVisualizerReturn {
  * - rebuildGraph is memoised with useCallback([]) so the subscription effect
  *   is stable across re-renders.
  */
-export function useMeshVisualizer(): UseMeshVisualizerReturn {
+export function useMeshVisualizer(): UseMeshVisualizerReturn & { peerjsId: string | null; connectToPeer: (id: string) => void } {
   // Singleton: created once on the first render path, never re-created.
   const meshRef = useRef<MeshNode | null>(null);
   if (!meshRef.current) meshRef.current = new MeshNode();
@@ -87,6 +87,7 @@ export function useMeshVisualizer(): UseMeshVisualizerReturn {
 
   const [nodes, setNodes] = useState<MeshFlowNode[]>([]);
   const [edges, setEdges] = useState<MeshFlowEdge[]>([]);
+  const [peerjsId, setPeerjsId] = useState<string | null>(meshNode.peerjsId);
 
   // edgeId → pending de-activation timer
   const flashTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
@@ -177,6 +178,7 @@ export function useMeshVisualizer(): UseMeshVisualizerReturn {
     const unsubPackets = node.onMessage((pkt: NetworkPacket<unknown>) => {
       flashEdge(pkt.header.senderId);
     });
+    const unsubPeerJs = node.onPeerJsId(setPeerjsId);
 
     // Capture Map ref for cleanup closure
     const timers = flashTimers.current;
@@ -184,14 +186,19 @@ export function useMeshVisualizer(): UseMeshVisualizerReturn {
     return () => {
       unsubNodes();
       unsubPackets();
+      unsubPeerJs();
       timers.forEach(clearTimeout);
       timers.clear();
     };
   }, [rebuildGraph, flashEdge]);
 
+  const connectToPeer = useCallback((id: string) => {
+    meshRef.current?.connectToWebRTCPeer(id);
+  }, []);
+
   // MeshNode is a singleton tied to the component lifecycle.
   // In React 18 StrictMode, we cannot destroy it on unmount because 
   // StrictMode will re-run effects without re-rendering, leaving the ref null.
 
-  return { meshNode, nodes, edges };
+  return { meshNode, nodes, edges, peerjsId, connectToPeer };
 }

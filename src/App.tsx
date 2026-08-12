@@ -43,7 +43,7 @@ import { TelemetryPanel } from './components/ui/TelemetryPanel';
 export default function App() {
 
   // ── Phase 1: MeshNode (singleton owned by hook) ───────────────────────────
-  const { meshNode, nodes, edges } = useMeshVisualizer();
+  const { meshNode, nodes, edges, peerjsId, connectToPeer } = useMeshVisualizer();
 
   // ── Phase 2: Protobuf serializer init ─────────────────────────────────────
   // useRef guards the idempotency — React StrictMode may call effects twice.
@@ -67,6 +67,12 @@ export default function App() {
     processMessage,
   } = useAI();
 
+  // Keep a stable ref to AI capabilities for the stable message listener
+  const aiRef = useRef({ isAILoaded, processMessage });
+  useEffect(() => {
+    aiRef.current = { isAILoaded, processMessage };
+  }, [isAILoaded, processMessage]);
+
   // ── App-level state ───────────────────────────────────────────────────────
   const [messages, setMessages] = useState<TriageSOSData[]>([]);
   const [inputText, setInputText] = useState('');
@@ -82,19 +88,55 @@ export default function App() {
       try {
         const raw = packet.payload;
 
+        let decoded: TriageSOSData;
+
         // Fast path — already a plain TriageSOSData object (no Protobuf wrapper)
         if (raw && typeof raw === 'object' && 'medicalNeed' in (raw as object)) {
-          setMessages((prev) => [...prev, raw as TriageSOSData]);
-          return;
+          decoded = raw as TriageSOSData;
+        } else {
+          // Protobuf path — reconstruct Uint8Array from structured-clone artifact
+          const bytes = raw instanceof Uint8Array
+            ? raw
+            : new Uint8Array(Object.values(raw as Record<string, number>));
+          decoded = decodeTriage(bytes);
         }
 
-        // Protobuf path — reconstruct Uint8Array from structured-clone artifact
-        const bytes = raw instanceof Uint8Array
-          ? raw
-          : new Uint8Array(Object.values(raw as Record<string, number>));
+        setMessages((prev) => {
+          // If we already have a processed version, don't overwrite it with a raw one
+          const existing = prev.find(m => m.id === decoded.id);
+          if (existing && existing.hazard !== 'UNPROCESSED' && decoded.hazard === 'UNPROCESSED') {
+            return prev;
+          }
+          return [...prev.filter(m => m.id !== decoded.id), decoded];
+        });
 
-        const decoded = decodeTriage(bytes);
-        setMessages((prev) => [...prev, decoded]);
+        // ── Distributed AI Triage ──
+        // If the message is raw, and WE have AI loaded, process it on behalf of the mesh!
+        const { isAILoaded, processMessage } = aiRef.current;
+        if (decoded.hazard === 'UNPROCESSED' && isAILoaded) {
+          processMessage(decoded.medicalNeed).then((result) => {
+            if (result) {
+              const triaged: TriageSOSData = {
+                ...result,
+                id: decoded.id, // Keep the same ID so peers replace the original message
+                sender: decoded.sender, // Keep original sender
+                timestamp: decoded.timestamp,
+              };
+              
+              // Broadcast the processed version back to the mesh
+              try {
+                const binary = encodeTriage(triaged);
+                meshNode.broadcast(binary, 'DATA');
+              } catch (encErr) {
+                meshNode.broadcast(triaged, 'DATA');
+              }
+              
+              // Update locally
+              setMessages((prev) => [...prev.filter(m => m.id !== triaged.id), triaged]);
+            }
+          });
+        }
+
       } catch (err) {
         console.warn('[App] Decode error on incoming packet:', err);
       }
@@ -131,7 +173,7 @@ export default function App() {
           sender: meshNode.id,
           priority: Priority.LOW,
           medicalNeed: text.slice(0, 120),
-          hazard: 'None',
+          hazard: 'UNPROCESSED',
           timestamp: Date.now(),
         };
       }
@@ -285,6 +327,8 @@ export default function App() {
         aiError={aiError}
         messages={messages}
         compressionMetric={compressionMetric}
+        peerjsId={peerjsId}
+        onConnectPeer={connectToPeer}
       />
 
     </div>

@@ -1,4 +1,4 @@
-
+import { useState } from 'react';
 import { Priority, type TriageSOSData } from '../../network/serialization/Serializer';
 
 // ─── Priority helpers ─────────────────────────────────────────────────────────
@@ -127,6 +127,10 @@ export interface TelemetryPanelProps {
    * Computed in App.tsx after each successful encode and passed down.
    */
   compressionMetric: string;
+  /** PeerJS ID for WebRTC cross-device connections */
+  peerjsId?: string | null;
+  /** Callback to connect to a new WebRTC peer */
+  onConnectPeer?: (id: string) => void;
 }
 
 /**
@@ -146,8 +150,11 @@ export function TelemetryPanel({
   aiError,
   messages,
   compressionMetric,
+  peerjsId,
+  onConnectPeer,
 }: TelemetryPanelProps) {
   const peerCount = Math.max(0, activeNodes - 1);
+  const [connectId, setConnectId] = useState('');
 
   return (
     <div
@@ -194,6 +201,45 @@ export function TelemetryPanel({
           <span className={`metric-value text-base font-bold leading-none ${messages.length > 0 ? 'text-orange-400' : 'text-zinc-600'}`}>
             {messages.length}
           </span>
+        </div>
+      </div>
+
+      {/* ── WebRTC Connection ── */}
+      <div className="p-2 rounded bg-zinc-900/60 border border-zinc-800/40 flex flex-col gap-1.5">
+        <div className="flex items-center justify-between">
+          <span className="metric-value text-[8px] text-zinc-500 uppercase tracking-widest">WebRTC Peer</span>
+          {peerjsId ? (
+            <button
+              onClick={() => navigator.clipboard.writeText(peerjsId)}
+              className="text-[8px] text-cyan-400 hover:text-cyan-300 tracking-widest"
+              title="Copy your Peer ID"
+            >
+              [COPY MY ID]
+            </button>
+          ) : (
+            <span className="text-[8px] text-zinc-600 tracking-widest animate-pulse">CONNECTING...</span>
+          )}
+        </div>
+        <div className="flex gap-1">
+          <input
+            type="text"
+            placeholder="Paste target Peer ID..."
+            value={connectId}
+            onChange={(e) => setConnectId(e.target.value)}
+            className="flex-1 bg-zinc-950 border border-zinc-800/60 text-zinc-300 text-[9px] p-1 rounded focus:outline-none focus:border-cyan-500/40"
+          />
+          <button
+            onClick={() => {
+              if (connectId.trim() && onConnectPeer) {
+                onConnectPeer(connectId.trim());
+                setConnectId('');
+              }
+            }}
+            disabled={!connectId.trim()}
+            className="px-2 bg-cyan-900/30 text-cyan-400 border border-cyan-800/50 rounded text-[9px] hover:bg-cyan-900/50 disabled:opacity-50"
+          >
+            CONNECT
+          </button>
         </div>
       </div>
 
