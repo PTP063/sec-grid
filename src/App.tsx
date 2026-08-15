@@ -1,10 +1,9 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
-
-// Phase 1 — MeshNode singleton via the visualizer hook
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useMeshStore } from './store/useMeshStore';
+import { useMessageStore } from './store/useMessageStore';
+import { useAIStore } from './store/useAIStore';
 import { useMeshVisualizer } from './hooks/useMeshVisualizer';
 import type { NetworkPacket } from './network/types';
-
-// Phase 2 — Protobuf serializer (module-level singletons via initSerializer)
 import {
   initSerializer,
   encodeTriage,
@@ -13,151 +12,105 @@ import {
   type TriageSOSData,
   Priority,
 } from './network/serialization/Serializer';
-
-// Phase 3 — On-device WebLLM via singleton hook
-import { useAI } from './ai/useAI';
-
-// Phase 4 — ReactFlow canvas
 import { MeshGraph } from './components/network/MeshGraph';
-
-// Phase 5 — Telemetry panel
 import { TelemetryPanel } from './components/ui/TelemetryPanel';
 
-// ─── App ──────────────────────────────────────────────────────────────────────
-
-/**
- * Master controller — wires Phase 1–4 into a unified Command Center UI.
- *
- * Singleton ownership:
- * ┌──────────────────────────────────────────────────────────────────┐
- * │  MeshNode     → owned by useMeshVisualizer (useRef inside hook)  │
- * │  AIProcessor  → owned by useAI → AIProcessor.getInstance()       │
- * │  Serializer   → module-level state, initialized once via useRef  │
- * └──────────────────────────────────────────────────────────────────┘
- *
- * Layout:
- *   Full-screen ReactFlow canvas (background)
- *   └─ Bottom-left:  SOS terminal input
- *   └─ Bottom-right: TelemetryPanel (glassmorphic, absolute positioned)
- */
 export default function App() {
+  const { meshNode, metadataList, peerjsId, nodeRole, encryptionKey, initMesh, destroyMesh, connectToPeer, setNodeRole, setEncryptionKey } = useMeshStore();
+  const { nodes, edges } = useMeshVisualizer();
 
-  // ── Phase 1: MeshNode (singleton owned by hook) ───────────────────────────
-  const { meshNode, nodes, edges, peerjsId, connectToPeer } = useMeshVisualizer();
+  const messages = useMessageStore((state) => state.messages);
+  const compressionMetric = useMessageStore((state) => state.compressionMetric);
+  const addOrUpdateMessage = useMessageStore((state) => state.addOrUpdateMessage);
+  
+  const isAILoaded = useAIStore((state) => state.isLoaded);
+  const isMockMode = useAIStore((state) => state.isMockMode);
+  const aiProgress = useAIStore((state) => state.loadingProgress);
+  const aiError = useAIStore((state) => state.error);
+  const loadModel = useAIStore((state) => state.loadModel);
+  const processMessage = useAIStore((state) => state.processMessage);
 
-  // ── Phase 2: Protobuf serializer init ─────────────────────────────────────
-  // useRef guards the idempotency — React StrictMode may call effects twice.
+  const [inputText, setInputText] = useState('');
+  const [isSending, setIsSending] = useState(false);
+
+  useEffect(() => {
+    // Automatically use the host IP for the signaling server so devices on Wi-Fi discover each other natively
+    initMesh({ host: window.location.hostname, port: 9000, path: '/mesh' });
+  }, [initMesh]);
+
+  useEffect(() => {
+    useMessageStore.getState().initWAL();
+  }, []);
+
   const serializerInitialized = useRef(false);
-
   useEffect(() => {
     if (serializerInitialized.current) return;
     serializerInitialized.current = true;
-    initSerializer().catch((err) =>
-      console.error('[App] Serializer init failed:', err)
-    );
+    initSerializer().catch((err) => console.error('[App] Serializer init failed:', err));
   }, []);
 
-  // ── Phase 3: WebLLM (singleton managed inside useAI) ──────────────────────
-  const {
-    isLoaded: isAILoaded,
-    isMockMode,
-    loadingProgress: aiProgress,
-    error: aiError,
-    loadModel,
-    processMessage,
-  } = useAI();
-
-  // Keep a stable ref to AI capabilities for the stable message listener
-  const aiRef = useRef({ isAILoaded, processMessage });
   useEffect(() => {
-    aiRef.current = { isAILoaded, processMessage };
-  }, [isAILoaded, processMessage]);
-
-  // ── App-level state ───────────────────────────────────────────────────────
-  const [messages, setMessages] = useState<TriageSOSData[]>([]);
-  const [inputText, setInputText] = useState('');
-  const [isSending, setIsSending] = useState(false);
-  const [compressionMetric, setCompression] = useState('');
-
-  // ── Receive handler ───────────────────────────────────────────────────────
-  // Subscribed once on mount; meshNode is a stable ref.
-  useEffect(() => {
+    if (!meshNode) return;
     const unsub = meshNode.onMessage((packet: NetworkPacket<unknown>) => {
       if (packet.header.type !== 'DATA') return;
 
       try {
         const raw = packet.payload;
-
         let decoded: TriageSOSData;
 
-        // Fast path — already a plain TriageSOSData object (no Protobuf wrapper)
         if (raw && typeof raw === 'object' && 'medicalNeed' in (raw as object)) {
           decoded = raw as TriageSOSData;
         } else {
-          // Protobuf path — reconstruct Uint8Array from structured-clone artifact
           const bytes = raw instanceof Uint8Array
             ? raw
             : new Uint8Array(Object.values(raw as Record<string, number>));
           decoded = decodeTriage(bytes);
         }
 
-        setMessages((prev) => {
-          // If we already have a processed version, don't overwrite it with a raw one
-          const existing = prev.find(m => m.id === decoded.id);
-          if (existing && existing.hazard !== 'UNPROCESSED' && decoded.hazard === 'UNPROCESSED') {
-            return prev;
-          }
-          return [...prev.filter(m => m.id !== decoded.id), decoded];
-        });
+        addOrUpdateMessage(decoded);
 
-        // ── Distributed AI Triage ──
-        // If the message is raw, and WE have AI loaded, process it on behalf of the mesh!
-        const { isAILoaded, processMessage } = aiRef.current;
-        if (decoded.hazard === 'UNPROCESSED' && isAILoaded) {
-          processMessage(decoded.medicalNeed).then((result) => {
+        const currentState = useAIStore.getState();
+        const { nodeRole } = useMeshStore.getState();
+        if (decoded.hazard === 'UNPROCESSED' && currentState.isLoaded && nodeRole === 'BASE_STATION') {
+          currentState.processMessage(decoded.medicalNeed).then((result) => {
             if (result) {
               const triaged: TriageSOSData = {
                 ...result,
-                id: decoded.id, // Keep the same ID so peers replace the original message
-                sender: decoded.sender, // Keep original sender
+                id: decoded.id,
+                sender: decoded.sender,
                 timestamp: decoded.timestamp,
               };
               
-              // Broadcast the processed version back to the mesh
               try {
                 const binary = encodeTriage(triaged);
                 meshNode.broadcast(binary, 'DATA');
-              } catch (encErr) {
+              } catch (_encErr) {
                 meshNode.broadcast(triaged, 'DATA');
               }
               
-              // Update locally
-              setMessages((prev) => [...prev.filter(m => m.id !== triaged.id), triaged]);
+              addOrUpdateMessage(triaged);
             }
           });
         }
-
       } catch (err) {
         console.warn('[App] Decode error on incoming packet:', err);
       }
     });
 
     return unsub;
-  }, [meshNode]);
+  }, [meshNode, addOrUpdateMessage]);
 
-  // ── Send SOS handler ──────────────────────────────────────────────────────
   const handleSendSOS = useCallback(async () => {
     const text = inputText.trim();
-    if (!text || isSending) return;
+    if (!text || isSending || !meshNode) return;
 
     setIsSending(true);
     setInputText('');
 
     try {
-      // Step 1 — AI inference (or raw text fallback)
       let triageData: TriageSOSData;
 
-      if (isAILoaded) {
+      if (isAILoaded && nodeRole === 'BASE_STATION') {
         const result = await processMessage(text);
         triageData = result ?? {
           id: crypto.randomUUID(),
@@ -178,32 +131,27 @@ export default function App() {
         };
       }
 
-      // Always stamp with this tab's node ID
       triageData = { ...triageData, sender: meshNode.id };
 
-      // Step 2 — Encode to Protobuf binary + compute compression metric
       let payload: Uint8Array | TriageSOSData = triageData;
       try {
         const binary = encodeTriage(triageData);
         const jsonStr = JSON.stringify(triageData);
         const metric = getCompressionRatio(jsonStr, binary);
-        setCompression(metric);
+        useMessageStore.getState().setCompressionMetric(metric);
         payload = binary;
-      } catch (encErr) {
-        console.warn('[App] Protobuf encode failed — sending raw object:', encErr);
+      } catch (_encErr) {
+        console.warn('[App] Protobuf encode failed — sending raw object:', _encErr);
       }
 
-      // Step 3 — Broadcast via Phase 1 BroadcastChannel mesh
       meshNode.broadcast(payload, 'DATA');
-
-      // Surface sent message in our own list immediately
-      setMessages((prev) => [...prev, triageData]);
+      addOrUpdateMessage(triageData);
     } catch (err) {
       console.error('[App] sendSOS pipeline error:', err);
     } finally {
       setIsSending(false);
     }
-  }, [inputText, isSending, isAILoaded, processMessage, meshNode]);
+  }, [inputText, isSending, isAILoaded, processMessage, meshNode, addOrUpdateMessage]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -212,124 +160,82 @@ export default function App() {
     }
   }, [handleSendSOS]);
 
-  // ── Render ─────────────────────────────────────────────────────────────────
+  if (!meshNode) return null;
+
   return (
-    // Full-screen dot-grid container
-    <div className="dot-grid w-full h-screen overflow-hidden relative">
-
-      {/* ── Phase 4: ReactFlow canvas — fills the entire background ── */}
-      <MeshGraph externalNodes={nodes} externalEdges={edges} />
-
-      {/* ── SOS input terminal — bottom-left floating ── */}
-      <div
-        className="absolute bottom-6 left-6 z-10 flex flex-col gap-2"
-        style={{
-          width: 280,
-          background: 'rgba(9,9,11,0.82)',
-          backdropFilter: 'blur(14px)',
-          WebkitBackdropFilter: 'blur(14px)',
-          border: '1px solid rgba(39,39,42,0.8)',
-          borderRadius: 10,
-          padding: 12,
-          boxShadow: '0 8px 32px rgba(0,0,0,0.5)',
-        }}
-      >
-        {/* Terminal header */}
-        <div className="flex items-center gap-2 pb-2 border-b border-zinc-800/50">
-          <span className="metric-value text-[9px] text-zinc-600 font-bold uppercase tracking-widest">
-            SOS Terminal
-          </span>
-          <span
-            className="ml-auto metric-value text-[7px] px-1.5 py-0.5 rounded-full border"
-            style={{
-              color: isAILoaded ? '#4ade80' : '#52525b',
-              borderColor: isAILoaded ? 'rgba(74,222,128,0.4)' : '#3f3f46',
-              background: isAILoaded ? 'rgba(74,222,128,0.06)' : 'transparent',
-            }}
-          >
-            {isAILoaded ? (isMockMode ? '● AI (MOCK)' : '● AI ONLINE') : '○ AI OFFLINE'}
-          </span>
-        </div>
-
-        {/* Load AI button — shown only before model loads */}
-        {!isAILoaded && !aiError && aiProgress === 0 && (
-          <button
-            type="button"
-            onClick={loadModel}
-            className="w-full py-1 rounded metric-value text-[9px] font-bold uppercase tracking-widest text-emerald-400 border border-emerald-400/30 bg-emerald-400/5 hover:bg-emerald-400/10 transition-colors"
-          >
-            Load AI Model
-          </button>
-        )}
-
-        {/* AI loading progress inline */}
-        {!isAILoaded && aiProgress > 0 && (
-          <div className="flex flex-col gap-0.5">
-            <div className="w-full h-1 rounded-full bg-zinc-800 overflow-hidden">
-              <div
-                className="h-full rounded-full animate-progress"
-                style={{
-                  width: `${aiProgress}%`,
-                  background: 'linear-gradient(90deg, #06b6d4, #22d3ee)',
-                  boxShadow: '0 0 5px rgba(34,211,238,0.55)',
-                  transition: 'width 0.3s ease',
-                }}
-              />
-            </div>
-            <span className="metric-value text-[8px] text-zinc-600">{aiProgress}% loaded</span>
-          </div>
-        )}
-
-        {/* WebGPU error */}
-        {aiError && (
-          <p className="metric-value text-[8px] text-red-400/80">⚠ {aiError.slice(0, 80)}</p>
-        )}
-
-        {/* Textarea */}
-        <textarea
-          rows={3}
-          value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={isSending}
-          placeholder="Type SOS message… (Enter to send)"
-          className="w-full rounded bg-zinc-950 border border-zinc-800/60 text-zinc-200 text-[10px] placeholder-zinc-700 p-2 resize-none focus:outline-none focus:border-cyan-500/40 focus:ring-1 focus:ring-cyan-500/10 transition-colors metric-value disabled:opacity-40"
-        />
-
-        {/* Send button */}
-        <button
-          type="button"
-          onClick={handleSendSOS}
-          disabled={isSending || !inputText.trim()}
-          className="w-full py-1.5 rounded metric-value text-[10px] font-bold tracking-widest uppercase transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-          style={{
-            background: isSending ? 'rgba(34,211,238,0.06)' : 'linear-gradient(135deg,rgba(34,211,238,0.15),rgba(34,211,238,0.06))',
-            border: '1px solid rgba(34,211,238,0.35)',
-            color: '#22d3ee',
-            boxShadow: isSending ? 'none' : '0 0 10px rgba(34,211,238,0.07)',
-          }}
-        >
-          {isSending ? '⟳  Processing…' : '⚡  Broadcast SOS'}
-        </button>
-
-        {/* Node ID watermark */}
-        <p className="metric-value text-[7px] text-zinc-700 truncate" title={meshNode.id}>
-          id:{meshNode.id}
-        </p>
+    <div className="layout-dashboard grid-bg brutal-shadow">
+      
+      {/* ── HEADER ── */}
+      <div style={{ gridArea: 'header', borderBottom: '1px solid var(--brutal-grey)', padding: '0 16px' }} className="flex-row justify-between bg-void">
+        <span className="text-sys" style={{ fontSize: 11, color: 'var(--accent-radar)' }}>SYS.VER.4.0.2 // MESH_NODES: {metadataList.length} // ROLE: {nodeRole}</span>
+        <span className="text-sys" style={{ fontSize: 11, color: 'var(--brutal-white)' }}>ENCRYPTION: SECP256K1 // NODE_ID: {meshNode.id.slice(0,8)}</span>
       </div>
 
-      {/* ── Phase 5: Telemetry panel — bottom-right ── */}
-      <TelemetryPanel
-        activeNodes={nodes.length}
-        aiProgress={aiProgress}
-        isAILoaded={isAILoaded}
-        isMockMode={isMockMode}
-        aiError={aiError}
-        messages={messages}
-        compressionMetric={compressionMetric}
-        peerjsId={peerjsId}
-        onConnectPeer={connectToPeer}
-      />
+      {/* ── SIDEBAR (TELEMETRY / TERMINAL) ── */}
+      <div style={{ gridArea: 'sidebar', borderRight: '1px solid var(--brutal-grey)', overflow: 'hidden' }}>
+        <TelemetryPanel
+          activeNodes={metadataList.length}
+          aiProgress={aiProgress}
+          isAILoaded={isAILoaded}
+          isMockMode={isMockMode}
+          aiError={aiError}
+          messages={messages}
+          compressionMetric={compressionMetric}
+          peerjsId={peerjsId}
+          onConnectPeer={connectToPeer}
+          loadModel={loadModel}
+          nodeRole={nodeRole}
+          onRoleToggle={setNodeRole}
+          onSetSignaling={(ip) => {
+            destroyMesh();
+            initMesh({ host: ip, port: 9000, path: '/mesh' });
+          }}
+          encryptionKey={encryptionKey}
+          onSetEncryptionKey={(key) => {
+            setEncryptionKey(key);
+            destroyMesh();
+            initMesh();
+          }}
+        />
+      </div>
+
+      {/* ── MAIN (REACT FLOW MESH GRAPH) ── */}
+      <div style={{ gridArea: 'main', position: 'relative' }}>
+        <MeshGraph externalNodes={nodes} externalEdges={edges} />
+      </div>
+
+      {/* ── BOTTOM (TRIAGE INPUT FORM) ── */}
+      <div className="pane" style={{ gridArea: 'bottom', borderTop: '1px solid var(--brutal-grey)' }}>
+        <div className="pane-header">
+          <span className="text-sys" style={{ fontSize: 10, color: 'var(--accent-radar)' }}>[TX_BUFFER] TRIAGE FORM</span>
+        </div>
+        <div className="flex-row gap-2" style={{ padding: 8, height: '100%' }}>
+          <textarea
+            value={inputText}
+            onChange={(e) => setInputText(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={isSending}
+            placeholder="ENTER SOS PAYLOAD... (ENTER TO TX)"
+            className="input-area text-sys"
+            style={{ height: '100%', flex: 1, border: '1px solid var(--brutal-light-grey)' }}
+          />
+          <button
+            type="button"
+            onClick={handleSendSOS}
+            disabled={isSending || !inputText.trim()}
+            className="btn"
+            style={{ width: '120px', height: '100%' }}
+          >
+            {isSending ? '[TX_ACTIVE]' : '[BROADCAST]'}
+          </button>
+        </div>
+      </div>
+
+      {/* ── FOOTER ── */}
+      <div style={{ gridArea: 'footer', borderTop: '1px solid var(--brutal-grey)', padding: '0 16px' }} className="flex-row justify-between bg-void">
+        <span className="text-sys" style={{ fontSize: 11, color: 'var(--brutal-white)' }}>LATENCY: &lt;42ms // GOSSIP: EPIDEMIC</span>
+        <span className="text-sys" style={{ fontSize: 11, color: 'var(--accent-radar)' }}>CONNECTION: BROADCAST_CHANNEL // PROTOBUF</span>
+      </div>
 
     </div>
   );

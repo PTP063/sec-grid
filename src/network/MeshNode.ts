@@ -6,14 +6,16 @@ import type {
   PacketType,
 } from './types';
 import { DeduplicationCache } from './DeduplicationCache';
+import { encryptPayload, decryptPayload } from './Crypto';
 
 import Peer, { type DataConnection } from 'peerjs';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const HEARTBEAT_INTERVAL_MS = 2_000;
+const HEARTBEAT_INTERVAL_MIN = 2_000;
+const HEARTBEAT_INTERVAL_MAX = 10_000;
 const PRUNE_INTERVAL_MS = 2_500;
-const PEER_TIMEOUT_MS = 6_000;  // Slightly longer than heartbeat*2 for jitter tolerance
+const PEER_TIMEOUT_MS = 25_000; // Tolerates up to 10s heartbeats + jitter
 
 // ─── MeshNode ────────────────────────────────────────────────────────────────
 
@@ -42,17 +44,27 @@ export class MeshNode {
   private readonly nodeListListeners: Set<NodeListListener>;
   private readonly peerjsIdListeners: Set<(id: string) => void>;
 
-  private readonly heartbeatTimer: ReturnType<typeof setInterval>;
+  private heartbeatTimer: ReturnType<typeof setTimeout> | null = null;
+  private currentHeartbeatInterval = HEARTBEAT_INTERVAL_MIN;
   private readonly pruneTimer: ReturnType<typeof setInterval>;
+  private discoveryTimer: ReturnType<typeof setInterval> | null = null;
 
   public peerjs: Peer | null = null;
   public peerjsId: string | null = null;
+  public signalingServer?: { host: string; port: number; path: string };
+  public encryptionKey: string;
 
   // Track total packets received for telemetry
   public packetsReceived = 0;
   public packetsSent = 0;
 
-  constructor(channelName = 'mesh-network') {
+  constructor(
+    channelName = 'mesh-network',
+    signalingServer?: { host: string; port: number; path: string },
+    encryptionKey = 'TACTICAL_MESH_KEY_01'
+  ) {
+    this.encryptionKey = encryptionKey;
+    this.signalingServer = signalingServer;
     this.id = crypto.randomUUID();
     this.channel = new BroadcastChannel(channelName);
     this.cache = new DeduplicationCache();
@@ -71,12 +83,40 @@ export class MeshNode {
     // Send an immediate heartbeat so sibling tabs see us right away
     this.broadcast(null, 'HEARTBEAT');
 
-    this.heartbeatTimer = setInterval(() => this.broadcast(null, 'HEARTBEAT'), HEARTBEAT_INTERVAL_MS);
+    this.scheduleNextHeartbeat();
     this.pruneTimer = setInterval(() => this.pruneSilentPeers(), PRUNE_INTERVAL_MS);
+
+    // If we have a local signaling server with discovery enabled, poll it
+    if (this.signalingServer) {
+      this.discoveryTimer = setInterval(() => this.pollForPeers(), 5000);
+      this.pollForPeers();
+    }
+  }
+
+  private scheduleNextHeartbeat() {
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
+    this.heartbeatTimer = setTimeout(() => {
+      this.broadcast(null, 'HEARTBEAT');
+      this.currentHeartbeatInterval = Math.min(
+        this.currentHeartbeatInterval * 1.5,
+        HEARTBEAT_INTERVAL_MAX
+      );
+      this.scheduleNextHeartbeat();
+    }, this.currentHeartbeatInterval);
   }
 
   private initWebRTC() {
-    this.peerjs = new Peer();
+    if (this.signalingServer) {
+      console.log(`[MeshNode] Connecting to local signaling bridge at ${this.signalingServer.host}:${this.signalingServer.port}`);
+      this.peerjs = new Peer({
+        host: this.signalingServer.host,
+        port: this.signalingServer.port,
+        path: this.signalingServer.path,
+        secure: this.signalingServer.port === 443
+      });
+    } else {
+      this.peerjs = new Peer();
+    }
     
     this.peerjs.on('open', (id) => {
       this.peerjsId = id;
@@ -128,13 +168,44 @@ export class MeshNode {
     });
   }
 
+  private async pollForPeers() {
+    if (!this.signalingServer || !this.peerjsId) return;
+    try {
+      const scheme = this.signalingServer.port === 443 ? 'https' : 'http';
+      const url = `${scheme}://${this.signalingServer.host}:${this.signalingServer.port}${this.signalingServer.path}/peerjs/peers`;
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const peers: string[] = await res.json();
+      
+      for (const peerId of peers) {
+        if (peerId !== this.peerjsId && !this.webrtcConnections.has(peerId)) {
+          console.log('[MeshNode] Discovered new peer via Signaling Server:', peerId);
+          this.connectToWebRTCPeer(peerId);
+        }
+      }
+    } catch (err) {
+      // Ignore network errors on polling
+    }
+  }
+
   // ── Public broadcast ───────────────────────────────────────────────────────
 
-  public broadcast<T>(payload: T, type: PacketType = 'DATA', targetId?: string, ttl = 5): void {
+  public async broadcast<T>(payload: T, type: PacketType = 'DATA', targetId?: string, ttl = 5): Promise<void> {
     const packetId = crypto.randomUUID();
+    let finalPayload = payload;
+    
+    if (payload instanceof Uint8Array && this.encryptionKey) {
+      try {
+        finalPayload = await encryptPayload(payload, this.encryptionKey) as unknown as T;
+      } catch (err) {
+        console.error('[MeshNode] Encryption failed, dropping packet:', err);
+        return;
+      }
+    }
+
     const packet: NetworkPacket<T> = {
       header: { packetId, senderId: this.id, targetId, ttl, timestamp: Date.now(), type },
-      payload,
+      payload: finalPayload,
     };
     this.cache.add(packetId);
     
@@ -150,7 +221,11 @@ export class MeshNode {
       }
     }
 
-    if (type === 'DATA') this.packetsSent++;
+    if (type === 'DATA') {
+      this.packetsSent++;
+      this.currentHeartbeatInterval = HEARTBEAT_INTERVAL_MIN;
+      this.scheduleNextHeartbeat();
+    }
   }
 
   // ── Subscription API ───────────────────────────────────────────────────────
@@ -188,17 +263,19 @@ export class MeshNode {
   // ── Cleanup ───────────────────────────────────────────────────────────────
 
   public destroy(): void {
-    clearInterval(this.heartbeatTimer);
+    if (this.heartbeatTimer) clearTimeout(this.heartbeatTimer);
+    if (this.discoveryTimer) clearInterval(this.discoveryTimer);
     clearInterval(this.pruneTimer);
     this.packetListeners.clear();
     this.nodeListListeners.clear();
     this.cache.destroy();
     this.channel.close();
+    this.peerjs?.destroy();
   }
 
   // ── Private ───────────────────────────────────────────────────────────────
 
-  private handleIncoming(event: MessageEvent): void {
+  private async handleIncoming(event: MessageEvent): Promise<void> {
     const packet = event.data as NetworkPacket<unknown>;
 
     // Structural guard
@@ -218,16 +295,37 @@ export class MeshNode {
 
     if (type === 'DATA') {
       this.packetsReceived++;
-      // Deliver to local listeners only if broadcast or addressed to us
-      if (!targetId || targetId === this.id) {
-        this.emitPacket(packet);
-      }
-      // Multi-hop relay for packets addressed to another node
-      if (targetId && targetId !== this.id && ttl > 1) {
-        this.channel.postMessage({
+      
+      // Epidemic Gossip Protocol: Relay multi-hop traffic (SYNCHRONOUSLY, WITHOUT DECRYPTING)
+      if (targetId === this.id) {
+        // Do not relay packets explicitly targeting us
+      } else if (ttl > 1) {
+        const relayedPacket = {
           ...packet,
           header: { ...packet.header, ttl: ttl - 1 },
-        });
+        };
+        this.channel.postMessage(relayedPacket);
+        for (const conn of this.webrtcConnections.values()) {
+          try {
+            conn.send(relayedPacket);
+          } catch (err) {
+            console.warn('[MeshNode] Failed to relay over WebRTC:', err);
+          }
+        }
+      }
+
+      // Deliver to local UI only if addressed to us or broadcast
+      if (!targetId || targetId === this.id) {
+        if (packet.payload instanceof Uint8Array && this.encryptionKey) {
+          try {
+            const decrypted = await decryptPayload(packet.payload, this.encryptionKey);
+            this.emitPacket({ ...packet, payload: decrypted });
+          } catch (err) {
+            console.warn('[MeshNode] Packet dropped: Decryption failed (wrong key?).', err);
+          }
+        } else {
+          this.emitPacket(packet);
+        }
       }
     }
 

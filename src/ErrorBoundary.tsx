@@ -1,4 +1,5 @@
 import React from 'react';
+import { useErrorStore } from './store/useErrorStore';
 
 export class ErrorBoundary extends React.Component<{children: React.ReactNode}, {hasError: boolean, error: Error | null, info: React.ErrorInfo | null}> {
   constructor(props: {children: React.ReactNode}) {
@@ -13,10 +14,9 @@ export class ErrorBoundary extends React.Component<{children: React.ReactNode}, 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     this.setState({ info });
     console.error("Root Error Boundary caught:", error, info);
-    fetch('http://localhost:5173/__catch_error', {
-      method: 'POST',
-      body: JSON.stringify({ message: error.message, stack: error.stack })
-    }).catch(() => {});
+    
+    // Add to our global offline-resilient error store
+    useErrorStore.getState().addError(error);
   }
 
   render() {

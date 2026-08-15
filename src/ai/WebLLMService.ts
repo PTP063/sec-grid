@@ -186,7 +186,7 @@ export class AIProcessor {
 
   private async _doInitialize(progressCallback: (progress: LoadProgress) => void): Promise<void> {
     // Check for WebGPU availability before attempting to load.
-    if (!navigator.gpu) {
+    if (!(navigator as any).gpu) {
       throw new Error(
         'WebGPU is not supported in this browser or on this hardware. ' +
         'Please use Chrome 113+ on a device with GPU acceleration enabled.'
@@ -200,7 +200,7 @@ export class AIProcessor {
         if (m.model_id === MODEL_ID) {
           return {
             ...m,
-            model: m.model.replace('https://huggingface.co/', window.location.origin + '/hf-proxy-v2/'),
+            model: m.model.replace('https://huggingface.co/', self.location.origin + '/hf-proxy-v2/'),
           };
         }
         return m;

@@ -5,7 +5,7 @@ import {
   Controls,
   BackgroundVariant,
   BaseEdge,
-  getBezierPath,
+  getStraightPath,
   type EdgeProps,
   type Edge,
 } from '@xyflow/react';
@@ -31,57 +31,34 @@ import { SensorNode } from './SensorNode';
  */
 const AnimatedMeshEdgeInner = ({
   id,
-  sourceX, sourceY, sourcePosition,
-  targetX, targetY, targetPosition,
+  sourceX, sourceY,
+  targetX, targetY,
   data,
   markerEnd,
 }: EdgeProps<Edge<MeshEdgeData>>) => {
   const isActive = data?.isActive ?? false;
 
-  const [edgePath, lx, ly] = getBezierPath({
-    sourceX, sourceY, sourcePosition,
-    targetX, targetY, targetPosition,
+  const [edgePath, lx, ly] = getStraightPath({
+    sourceX, sourceY,
+    targetX, targetY,
   });
 
   const edgeStyle: CSSProperties = {
-    stroke:      isActive ? '#22d3ee' : '#3f3f46',
-    strokeWidth: isActive ? 2 : 1.2,
-    filter:      isActive ? 'drop-shadow(0 0 5px rgba(34,211,238,0.7))' : 'none',
-    transition:  'stroke 0.2s ease, stroke-width 0.2s ease, filter 0.2s ease',
+    stroke:      isActive ? 'var(--accent-radar)' : 'var(--brutal-light-grey)',
+    strokeWidth: 2,
+    transition:  'stroke 0.1s linear',
   };
 
-  // Stable path ID — scoped to this edge instance
-  const pathId = `ame-${id}`;
-
   return (
-    <>
-      {/* mpath reference — invisible duplicate, needed by animateMotion */}
-      <path id={pathId} d={edgePath} fill="none" stroke="none" />
-
-      <BaseEdge
-        id={id}
-        path={edgePath}
-        markerEnd={markerEnd}
-        labelX={lx}
-        labelY={ly}
-        style={edgeStyle}
-      />
-
-      {/* Packet pulse — rendered only during active flash */}
-      {isActive && (
-        <g aria-hidden="true">
-          <circle
-            r={4.5}
-            fill="#fb923c"
-            style={{ filter: 'drop-shadow(0 0 4px #fb923c)' }}
-          >
-            <animateMotion dur="0.72s" repeatCount="1" fill="freeze">
-              <mpath xlinkHref={`#${pathId}`} />
-            </animateMotion>
-          </circle>
-        </g>
-      )}
-    </>
+    <BaseEdge
+      id={id}
+      path={edgePath}
+      markerEnd={markerEnd}
+      labelX={lx}
+      labelY={ly}
+      style={edgeStyle}
+      className={isActive ? 'anim-edge-flow' : ''}
+    />
   );
 };
 
@@ -119,10 +96,10 @@ export const MeshGraph = memo(({ externalNodes, externalEdges }: MeshGraphProps)
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
 
-      {/* Waiting-for-peers hint — centered, pointer-events off */}
+      {/* Waiting-for-peers hint */}
       {peerCount === 0 && externalNodes.length > 0 && (
         <div
-          className="anim-fade-in"
+          className="anim-blink"
           style={{
             position:      'absolute',
             top:           '50%',
@@ -131,15 +108,10 @@ export const MeshGraph = memo(({ externalNodes, externalEdges }: MeshGraphProps)
             zIndex:        5,
             pointerEvents: 'none',
             textAlign:     'center',
-            paddingBottom: 80,   /* lift above the SOS terminal */
           }}
         >
-          <div style={{ fontSize: 28, marginBottom: 10 }}>📡</div>
-          <p className="mono" style={{
-            fontSize: 10, color: '#3f3f46',
-            letterSpacing: '0.1em', textTransform: 'uppercase',
-          }}>
-            Awaiting peers — open another tab
+          <p className="text-sys" style={{ fontSize: 12, color: 'var(--accent-warn)' }}>
+            [WARN: NO_PEERS_DETECTED]
           </p>
         </div>
       )}

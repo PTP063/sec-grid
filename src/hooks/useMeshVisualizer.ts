@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import type { Node, Edge } from '@xyflow/react';
-import type { NodeMetadata, NetworkPacket } from '../network/types';
-import { MeshNode } from '../network/MeshNode';
-
-// ─── Typed ReactFlow data shapes ──────────────────────────────────────────────
+import * as d3 from 'd3-force';
+import type { NetworkPacket } from '../network/types';
+import { useMeshStore } from '../store/useMeshStore';
 
 export interface MeshNodeData extends Record<string, unknown> {
   label: string;
@@ -13,32 +12,16 @@ export interface MeshNodeData extends Record<string, unknown> {
 }
 
 export interface MeshEdgeData extends Record<string, unknown> {
-  /** True for the duration of the edge-flash TTL after a packet traverses it. */
   isActive: boolean;
 }
 
 export type MeshFlowNode = Node<MeshNodeData>;
 export type MeshFlowEdge = Edge<MeshEdgeData>;
 
-// ─── Layout constants ─────────────────────────────────────────────────────────
-
 const CENTER_X = 400;
 const CENTER_Y = 300;
-const ORBIT_RADIUS = 220;
-const EDGE_FLASH_MS = 900;   // How long the "packet travelling" animation stays on
+const EDGE_FLASH_MS = 900;
 
-// ─── Pure geometry / ID helpers ───────────────────────────────────────────────
-
-/** Distributes N peer nodes evenly around a circle, starting from 12 o'clock. */
-function orbitalPosition(index: number, total: number): { x: number; y: number } {
-  const angle = (2 * Math.PI * index) / total - Math.PI / 2;
-  return {
-    x: CENTER_X + ORBIT_RADIUS * Math.cos(angle),
-    y: CENTER_Y + ORBIT_RADIUS * Math.sin(angle),
-  };
-}
-
-/** Canonical, order-independent edge ID. */
 const edgeId = (a: string, b: string) => [a, b].sort().join('--');
 
 function buildEdge(src: string, tgt: string, active: boolean): MeshFlowEdge {
@@ -52,103 +35,28 @@ function buildEdge(src: string, tgt: string, active: boolean): MeshFlowEdge {
   };
 }
 
-// ─── Hook return type ─────────────────────────────────────────────────────────
-
 export interface UseMeshVisualizerReturn {
-  /** Stable MeshNode singleton — never recreated across renders. */
-  meshNode: MeshNode;
-  /** ReactFlow node array derived from live NodeMetadata. */
   nodes: MeshFlowNode[];
-  /** ReactFlow edge array, flashing transiently on packet events. */
   edges: MeshFlowEdge[];
 }
 
-  // ─── useMeshVisualizer ────────────────────────────────────────────────────────
+interface D3Node extends d3.SimulationNodeDatum {
+  id: string;
+}
 
-/**
- * Manages the MeshNode singleton lifecycle and derives all ReactFlow graph state
- * from the live network topology.
- *
- * Design decisions:
- * - MeshNode is created in the ref initialiser path (not inside useEffect) so
- *   it's available synchronously on the very first render with no flash.
- * - The destroy-on-unmount effect has an empty dep array so it fires exactly
- *   once — on the final unmount, not on every re-render.
- * - Edge flashes use a Map<edgeId, timer> to debounce rapid packet bursts on
- *   the same link without accumulating multiple de-activation timers.
- * - rebuildGraph is memoised with useCallback([]) so the subscription effect
- *   is stable across re-renders.
- */
-export function useMeshVisualizer(): UseMeshVisualizerReturn & { peerjsId: string | null; connectToPeer: (id: string) => void } {
-  // Singleton: created once on the first render path, never re-created.
-  const meshRef = useRef<MeshNode | null>(null);
-  if (!meshRef.current) meshRef.current = new MeshNode();
-  const meshNode = meshRef.current;
+export function useMeshVisualizer(): UseMeshVisualizerReturn {
+  const metadataList = useMeshStore((state) => state.metadataList);
+  const meshNode = useMeshStore((state) => state.meshNode);
 
   const [nodes, setNodes] = useState<MeshFlowNode[]>([]);
   const [edges, setEdges] = useState<MeshFlowEdge[]>([]);
-  const [peerjsId, setPeerjsId] = useState<string | null>(meshNode.peerjsId);
 
-  // edgeId → pending de-activation timer
+  const flowNodesRef = useRef<MeshFlowNode[]>([]);
   const flashTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const simulationRef = useRef<d3.Simulation<D3Node, undefined> | null>(null);
 
-  // ── Graph builder ──────────────────────────────────────────────────────────
-
-  const rebuildGraph = useCallback((metadata: NodeMetadata[]) => {
-    const self = metadata.find((n) => n.isSelf);
-    const peers = metadata.filter((n) => !n.isSelf);
-
-    const flowNodes: MeshFlowNode[] = [];
-
-    if (self) {
-      flowNodes.push({
-        id: self.id,
-        type: 'sensorNode',
-        position: { x: CENTER_X, y: CENTER_Y },
-        draggable: false,
-        data: { label: 'This Tab', isSelf: true, status: self.status, lastSeen: self.lastSeen },
-      });
-    }
-
-    peers.forEach((peer, idx) => {
-      flowNodes.push({
-        id: peer.id,
-        type: 'sensorNode',
-        position: orbitalPosition(idx, peers.length),
-        draggable: true,
-        data: { label: `Tab-${peer.id.slice(0, 6)}`, isSelf: false, status: peer.status, lastSeen: peer.lastSeen },
-      });
-    });
-
-    const flowEdges: MeshFlowEdge[] = [];
-
-    if (self) {
-      peers.forEach((peer) => {
-        const eid = edgeId(self.id, peer.id);
-        flowEdges.push(buildEdge(self.id, peer.id, flashTimers.current.has(eid)));
-      });
-      // Ring edges between adjacent peers (creates the "mesh web" visual)
-      if (peers.length > 2) {
-        peers.forEach((peer, idx) => {
-          const next = peers[(idx + 1) % peers.length];
-          const eid = edgeId(peer.id, next.id);
-          flowEdges.push(buildEdge(peer.id, next.id, flashTimers.current.has(eid)));
-        });
-      }
-    }
-
-    setNodes(flowNodes);
-    setEdges(flowEdges);
-  }, []);
-
-  // ── Edge flash ────────────────────────────────────────────────────────────
-
-  /**
-   * Transiently activates the edge between `sourceId` and this tab's node.
-   * Re-entrant: if a flash is already active on the edge, the timer is reset.
-   */
   const flashEdge = useCallback((sourceId: string) => {
-    const selfId = meshRef.current?.id;
+    const selfId = meshNode?.id;
     if (!selfId) return;
 
     const eid = edgeId(sourceId, selfId);
@@ -167,38 +75,114 @@ export function useMeshVisualizer(): UseMeshVisualizerReturn & { peerjsId: strin
     }, EDGE_FLASH_MS);
 
     flashTimers.current.set(eid, timer);
-  }, []);
-
-  // ── Subscriptions ─────────────────────────────────────────────────────────
+  }, [meshNode]);
 
   useEffect(() => {
-    const node = meshRef.current!;
+    const self = metadataList.find((n) => n.isSelf);
+    const peers = metadataList.filter((n) => !n.isSelf);
 
-    const unsubNodes = node.onNodeListChange(rebuildGraph);
-    const unsubPackets = node.onMessage((pkt: NetworkPacket<unknown>) => {
-      flashEdge(pkt.header.senderId);
+    const prevNodeMap = new Map(flowNodesRef.current.map((n) => [n.id, n]));
+
+    const newFlowNodes: MeshFlowNode[] = [];
+    const d3Nodes: D3Node[] = [];
+
+    if (self) {
+      const prev = prevNodeMap.get(self.id);
+      const pos = prev ? prev.position : { x: CENTER_X, y: CENTER_Y };
+      newFlowNodes.push({
+        id: self.id,
+        type: 'sensorNode',
+        position: pos,
+        draggable: false,
+        data: { label: 'This Tab', isSelf: true, status: self.status, lastSeen: self.lastSeen },
+      });
+      d3Nodes.push({ id: self.id, x: pos.x, y: pos.y, fx: CENTER_X, fy: CENTER_Y });
+    }
+
+    peers.forEach((peer) => {
+      const prev = prevNodeMap.get(peer.id);
+      // Spawn new nodes slightly offset from center to avoid identical start coordinates
+      const pos = prev ? prev.position : { x: CENTER_X + (Math.random() - 0.5) * 50, y: CENTER_Y + (Math.random() - 0.5) * 50 };
+      newFlowNodes.push({
+        id: peer.id,
+        type: 'sensorNode',
+        position: pos,
+        draggable: true,
+        data: { label: `Tab-${peer.id.slice(0, 6)}`, isSelf: false, status: peer.status, lastSeen: peer.lastSeen },
+      });
+      d3Nodes.push({ id: peer.id, x: pos.x, y: pos.y });
     });
-    const unsubPeerJs = node.onPeerJsId(setPeerjsId);
 
-    // Capture Map ref for cleanup closure
-    const timers = flashTimers.current;
+    const newFlowEdges: MeshFlowEdge[] = [];
+    const d3Links: d3.SimulationLinkDatum<D3Node>[] = [];
+    
+    if (self) {
+      peers.forEach((peer) => {
+        const eid = edgeId(self.id, peer.id);
+        newFlowEdges.push(buildEdge(self.id, peer.id, flashTimers.current.has(eid)));
+        d3Links.push({ source: self.id, target: peer.id });
+      });
+      if (peers.length > 2) {
+        peers.forEach((peer, idx) => {
+          const next = peers[(idx + 1) % peers.length];
+          const eid = edgeId(peer.id, next.id);
+          newFlowEdges.push(buildEdge(peer.id, next.id, flashTimers.current.has(eid)));
+          d3Links.push({ source: peer.id, target: next.id });
+        });
+      }
+    }
+
+    flowNodesRef.current = newFlowNodes;
+    setNodes([...newFlowNodes]);
+    setEdges(newFlowEdges);
+
+    if (simulationRef.current) {
+      simulationRef.current.stop();
+    }
+
+    const sim = d3.forceSimulation<D3Node>(d3Nodes)
+      .force('charge', d3.forceManyBody().strength(-4000))
+      .force('link', d3.forceLink(d3Links).id((d: any) => d.id).distance(240))
+      .force('center', d3.forceCenter(CENTER_X, CENTER_Y))
+      .alpha(0.1) // Low alpha to gently ease into new layout without jittering
+      .restart();
+
+    sim.on('tick', () => {
+      flowNodesRef.current = flowNodesRef.current.map((n) => {
+        const d3Node = d3Nodes.find((d) => d.id === n.id);
+        if (d3Node && d3Node.x !== undefined && d3Node.y !== undefined) {
+          // If the user drags a node in React Flow, the position changes from React Flow's end.
+          // But our d3 simulation doesn't know about user dragging unless we bind it.
+          // For simplicity, we just let d3 override the position, which disables manual dragging
+          // effectively, but creates a nice automatic organic layout.
+          return { ...n, position: { x: d3Node.x, y: d3Node.y } };
+        }
+        return n;
+      });
+      setNodes([...flowNodesRef.current]);
+    });
+
+    simulationRef.current = sim;
 
     return () => {
-      unsubNodes();
+      sim.stop();
+    };
+  }, [metadataList]);
+
+  // Handle packets for edge flashing
+  useEffect(() => {
+    if (!meshNode) return;
+    const unsubPackets = meshNode.onMessage((pkt: NetworkPacket<unknown>) => {
+      flashEdge(pkt.header.senderId);
+    });
+
+    const timers = flashTimers.current;
+    return () => {
       unsubPackets();
-      unsubPeerJs();
       timers.forEach(clearTimeout);
       timers.clear();
     };
-  }, [rebuildGraph, flashEdge]);
+  }, [meshNode, flashEdge]);
 
-  const connectToPeer = useCallback((id: string) => {
-    meshRef.current?.connectToWebRTCPeer(id);
-  }, []);
-
-  // MeshNode is a singleton tied to the component lifecycle.
-  // In React 18 StrictMode, we cannot destroy it on unmount because 
-  // StrictMode will re-run effects without re-rendering, leaving the ref null.
-
-  return { meshNode, nodes, edges, peerjsId, connectToPeer };
+  return { nodes, edges };
 }

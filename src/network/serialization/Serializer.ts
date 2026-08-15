@@ -22,6 +22,23 @@ export interface TriageSOSData {
 
 // ─── Module-level state (singleton pattern) ───────────────────────────────────
 
+function uuidToBytes(uuid: string): Uint8Array {
+  const hex = uuid.replace(/-/g, '');
+  const bytes = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) {
+    bytes[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+function bytesToUuid(bytes: Uint8Array): string {
+  const hex: string[] = [];
+  for (let i = 0; i < 16; i++) {
+    hex.push((bytes[i] || 0).toString(16).padStart(2, '0'));
+  }
+  return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10, 16).join('')}`;
+}
+
 let root:             protobuf.Root | null = null;
 let TriageSOSMessage: protobuf.Type | null = null;
 // Guard against concurrent calls (e.g. React StrictMode double-invoke)
@@ -65,10 +82,17 @@ export function encodeTriage(data: TriageSOSData): Uint8Array {
   if (!TriageSOSMessage) {
     throw new Error('[Serializer] Not initialised — call initSerializer() first.');
   }
-  const errMsg = TriageSOSMessage.verify(data);
+  
+  const payload = {
+    ...data,
+    id: uuidToBytes(data.id),
+    sender: uuidToBytes(data.sender),
+  };
+
+  const errMsg = TriageSOSMessage.verify(payload);
   if (errMsg) throw new Error(`[Serializer] Payload validation failed: ${errMsg}`);
 
-  const message = TriageSOSMessage.create(data);
+  const message = TriageSOSMessage.create(payload);
   return TriageSOSMessage.encode(message).finish();
 }
 
@@ -81,11 +105,17 @@ export function decodeTriage(buffer: Uint8Array): TriageSOSData {
     throw new Error('[Serializer] Not initialised — call initSerializer() first.');
   }
   const message = TriageSOSMessage.decode(buffer);
-  return TriageSOSMessage.toObject(message, {
+  const obj = TriageSOSMessage.toObject(message, {
     enums:  Number,
     longs:  Number,
     defaults: true,
-  }) as unknown as TriageSOSData;
+  });
+
+  return {
+    ...obj,
+    id: bytesToUuid(message.id as Uint8Array),
+    sender: bytesToUuid(message.sender as Uint8Array),
+  } as unknown as TriageSOSData;
 }
 
 /**
