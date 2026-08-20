@@ -11,6 +11,8 @@ export const Priority = {
 } as const;
 export type Priority = typeof Priority[keyof typeof Priority];
 
+export type TriageStatus = 'PENDING' | 'ACKNOWLEDGED' | 'RESOLVED';
+
 export interface TriageSOSData {
   id:          string;
   sender:      string;
@@ -18,6 +20,7 @@ export interface TriageSOSData {
   medicalNeed: string;
   hazard:      string;
   timestamp:   number;
+  status?:     TriageStatus;
 }
 
 // ─── Module-level state (singleton pattern) ───────────────────────────────────
@@ -85,6 +88,7 @@ export function encodeTriage(data: TriageSOSData): Uint8Array {
   
   const payload = {
     ...data,
+    status: data.status || 'PENDING',
     id: uuidToBytes(data.id),
     sender: uuidToBytes(data.sender),
   };
@@ -113,6 +117,7 @@ export function decodeTriage(buffer: Uint8Array): TriageSOSData {
 
   return {
     ...obj,
+    status: (obj as { status?: string }).status || 'PENDING',
     id: bytesToUuid(message.id as Uint8Array),
     sender: bytesToUuid(message.sender as Uint8Array),
   } as unknown as TriageSOSData;

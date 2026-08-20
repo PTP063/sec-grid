@@ -211,6 +211,15 @@ body, html {
 .anim-blink { animation: blink 1s steps(1, end) infinite; }
 .anim-blink-fast { animation: blink 0.5s steps(1, end) infinite; }
 
+@keyframes alert-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.85; }
+}
+
+.anim-alert-pulse {
+  animation: alert-pulse 1.2s ease-in-out infinite;
+}
+
 @keyframes edge-flow-brutal {
   to { stroke-dashoffset: -20; }
 }
@@ -218,6 +227,21 @@ body, html {
 .anim-edge-flow {
   stroke-dasharray: 4 4;
   animation: edge-flow-brutal 0.3s linear infinite;
+}
+
+/* ── Interactive Card & Macro Styles ─────────────────────────────────────── */
+.macro-chip:hover:not(:disabled) {
+  background: var(--brutal-white) !important;
+  color: var(--bg-void) !important;
+}
+
+.message-card:hover {
+  background: rgba(255, 255, 255, 0.03) !important;
+}
+
+.btn-brutal-inverted:hover {
+  background: var(--brutal-white) !important;
+  color: var(--bg-void) !important;
 }
 
 /* Scrollbar Brutalism */

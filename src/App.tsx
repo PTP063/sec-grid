@@ -10,10 +10,14 @@ import {
   decodeTriage,
   getCompressionRatio,
   type TriageSOSData,
+  type TriageStatus,
   Priority,
 } from './network/serialization/Serializer';
 import { MeshGraph } from './components/network/MeshGraph';
 import { TelemetryPanel } from './components/ui/TelemetryPanel';
+import { AlertBanner } from './components/ui/AlertBanner';
+import { QuickMacros } from './components/ui/QuickMacros';
+import { playTacticalAlert, playAckChirp, playResolvedChime } from './utils/audio';
 
 export default function App() {
   const { meshNode, metadataList, peerjsId, nodeRole, encryptionKey, initMesh, destroyMesh, connectToPeer, setNodeRole, setEncryptionKey } = useMeshStore();
@@ -22,6 +26,9 @@ export default function App() {
   const messages = useMessageStore((state) => state.messages);
   const compressionMetric = useMessageStore((state) => state.compressionMetric);
   const addOrUpdateMessage = useMessageStore((state) => state.addOrUpdateMessage);
+  const updateMessageStatus = useMessageStore((state) => state.updateMessageStatus);
+  const audioEnabled = useMessageStore((state) => state.audioEnabled);
+  const toggleAudio = useMessageStore((state) => state.toggleAudio);
   
   const isAILoaded = useAIStore((state) => state.isLoaded);
   const isMockMode = useAIStore((state) => state.isMockMode);
@@ -69,6 +76,15 @@ export default function App() {
 
         addOrUpdateMessage(decoded);
 
+        // Sound alert for critical incoming packets
+        if (useMessageStore.getState().audioEnabled) {
+          const isCrit = decoded.priority === Priority.CRITICAL;
+          const hasHazard = decoded.hazard && decoded.hazard !== 'None' && decoded.hazard !== 'UNPROCESSED';
+          if (isCrit || hasHazard) {
+            playTacticalAlert();
+          }
+        }
+
         const currentState = useAIStore.getState();
         const { nodeRole } = useMeshStore.getState();
         if (decoded.hazard === 'UNPROCESSED' && currentState.isLoaded && nodeRole === 'BASE_STATION') {
@@ -79,12 +95,13 @@ export default function App() {
                 id: decoded.id,
                 sender: decoded.sender,
                 timestamp: decoded.timestamp,
+                status: decoded.status || 'PENDING',
               };
               
               try {
                 const binary = encodeTriage(triaged);
                 meshNode.broadcast(binary, 'DATA');
-              } catch (_encErr) {
+              } catch {
                 meshNode.broadcast(triaged, 'DATA');
               }
               
@@ -119,6 +136,7 @@ export default function App() {
           medicalNeed: text.slice(0, 120),
           hazard: 'None',
           timestamp: Date.now(),
+          status: 'PENDING',
         };
       } else {
         triageData = {
@@ -128,6 +146,7 @@ export default function App() {
           medicalNeed: text.slice(0, 120),
           hazard: 'UNPROCESSED',
           timestamp: Date.now(),
+          status: 'PENDING',
         };
       }
 
@@ -146,12 +165,61 @@ export default function App() {
 
       meshNode.broadcast(payload, 'DATA');
       addOrUpdateMessage(triageData);
+
+      if (audioEnabled) {
+        playAckChirp();
+      }
     } catch (err) {
       console.error('[App] sendSOS pipeline error:', err);
     } finally {
       setIsSending(false);
     }
-  }, [inputText, isSending, isAILoaded, processMessage, meshNode, addOrUpdateMessage]);
+  }, [inputText, isSending, isAILoaded, nodeRole, processMessage, meshNode, addOrUpdateMessage, audioEnabled]);
+
+  const handleUpdateStatus = useCallback((id: string, status: TriageStatus) => {
+    const updated = updateMessageStatus(id, status);
+    if (!updated || !meshNode) return;
+
+    // Broadcast status sync across the mesh
+    try {
+      const binary = encodeTriage(updated);
+      meshNode.broadcast(binary, 'DATA');
+    } catch {
+      meshNode.broadcast(updated, 'DATA');
+    }
+
+    if (audioEnabled) {
+      if (status === 'ACKNOWLEDGED') playAckChirp();
+      if (status === 'RESOLVED') playResolvedChime();
+    }
+  }, [updateMessageStatus, meshNode, audioEnabled]);
+
+  const handleRetriageMessage = useCallback(async (msg: TriageSOSData) => {
+    if (!isAILoaded || !meshNode) return;
+    try {
+      const result = await processMessage(msg.medicalNeed);
+      if (result) {
+        const triaged: TriageSOSData = {
+          ...result,
+          id: msg.id,
+          sender: msg.sender,
+          timestamp: msg.timestamp,
+          status: msg.status || 'PENDING',
+        };
+
+        try {
+          const binary = encodeTriage(triaged);
+          meshNode.broadcast(binary, 'DATA');
+        } catch {
+          meshNode.broadcast(triaged, 'DATA');
+        }
+
+        addOrUpdateMessage(triaged);
+      }
+    } catch (err) {
+      console.error('[App] Re-triage error:', err);
+    }
+  }, [isAILoaded, meshNode, processMessage, addOrUpdateMessage]);
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -167,8 +235,31 @@ export default function App() {
       
       {/* ── HEADER ── */}
       <div style={{ gridArea: 'header', borderBottom: '1px solid var(--brutal-grey)', padding: '0 16px' }} className="flex-row justify-between bg-void">
-        <span className="text-sys" style={{ fontSize: 11, color: 'var(--accent-radar)' }}>SYS.VER.4.0.2 // MESH_NODES: {metadataList.length} // ROLE: {nodeRole}</span>
-        <span className="text-sys" style={{ fontSize: 11, color: 'var(--brutal-white)' }}>ENCRYPTION: SECP256K1 // NODE_ID: {meshNode.id.slice(0,8)}</span>
+        <div className="flex-row gap-2">
+          <span className="text-sys" style={{ fontSize: 11, color: 'var(--accent-radar)' }}>
+            SYS.VER.4.1.0 // MESH_NODES: {metadataList.length} // ROLE: {nodeRole}
+          </span>
+        </div>
+        <div className="flex-row gap-3">
+          <button
+            type="button"
+            onClick={toggleAudio}
+            className="text-sys"
+            style={{
+              background: 'none',
+              border: `1px solid ${audioEnabled ? 'var(--accent-radar)' : 'var(--brutal-light-grey)'}`,
+              color: audioEnabled ? 'var(--accent-radar)' : 'var(--brutal-light-grey)',
+              fontSize: 9,
+              padding: '2px 6px',
+              cursor: 'pointer',
+            }}
+          >
+            [AUDIO: {audioEnabled ? 'ACTIVE' : 'MUTED'}]
+          </button>
+          <span className="text-sys" style={{ fontSize: 11, color: 'var(--brutal-white)' }}>
+            ENCRYPTION: SECP256K1 // NODE_ID: {meshNode.id.slice(0, 8)}
+          </span>
+        </div>
       </div>
 
       {/* ── SIDEBAR (TELEMETRY / TERMINAL) ── */}
@@ -196,26 +287,35 @@ export default function App() {
             destroyMesh();
             initMesh();
           }}
+          onUpdateMessageStatus={handleUpdateStatus}
+          onRetriageMessage={handleRetriageMessage}
         />
       </div>
 
-      {/* ── MAIN (REACT FLOW MESH GRAPH) ── */}
-      <div style={{ gridArea: 'main', position: 'relative' }}>
-        <MeshGraph externalNodes={nodes} externalEdges={edges} />
+      {/* ── MAIN (REACT FLOW MESH GRAPH & ALERT BANNER) ── */}
+      <div style={{ gridArea: 'main', position: 'relative', display: 'flex', flexDirection: 'column' }}>
+        <AlertBanner onAcknowledge={(msg) => handleUpdateStatus(msg.id, 'ACKNOWLEDGED')} />
+        <div style={{ flex: 1, position: 'relative' }}>
+          <MeshGraph externalNodes={nodes} externalEdges={edges} />
+        </div>
       </div>
 
-      {/* ── BOTTOM (TRIAGE INPUT FORM) ── */}
+      {/* ── BOTTOM (TRIAGE INPUT FORM & QUICK MACROS) ── */}
       <div className="pane" style={{ gridArea: 'bottom', borderTop: '1px solid var(--brutal-grey)' }}>
         <div className="pane-header">
           <span className="text-sys" style={{ fontSize: 10, color: 'var(--accent-radar)' }}>[TX_BUFFER] TRIAGE FORM</span>
         </div>
-        <div className="flex-row gap-2" style={{ padding: 8, height: '100%' }}>
+        
+        {/* Quick Emergency Macro Chips */}
+        <QuickMacros onSelect={(payload) => setInputText(payload)} disabled={isSending} />
+
+        <div className="flex-row gap-2" style={{ padding: 8, flex: 1 }}>
           <textarea
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={isSending}
-            placeholder="ENTER SOS PAYLOAD... (ENTER TO TX)"
+            placeholder="ENTER SOS PAYLOAD OR SELECT MACRO... (ENTER TO TX)"
             className="input-area text-sys"
             style={{ height: '100%', flex: 1, border: '1px solid var(--brutal-light-grey)' }}
           />

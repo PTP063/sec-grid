@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { Priority, type TriageSOSData } from '../../network/serialization/Serializer';
+import { useState, useMemo, memo } from 'react';
+import { Priority, type TriageSOSData, type TriageStatus } from '../../network/serialization/Serializer';
+import { useMessageStore, type TriageFilter } from '../../store/useMessageStore';
 
 const PRIORITY_LABEL: Record<Priority, string> = {
   [Priority.LOW]: 'LOW',
@@ -11,6 +12,12 @@ const PRIORITY_COLOR: Record<Priority, string> = {
   [Priority.LOW]: 'var(--brutal-white)',
   [Priority.HIGH]: 'var(--accent-warn)',
   [Priority.CRITICAL]: 'var(--accent-crit)',
+};
+
+const STATUS_COLOR: Record<TriageStatus, string> = {
+  PENDING: 'var(--accent-warn)',
+  ACKNOWLEDGED: 'var(--accent-radar)',
+  RESOLVED: 'var(--brutal-light-grey)',
 };
 
 function formatTs(ts: number): string {
@@ -65,34 +72,175 @@ function AIProgressBar({ progress, isLoaded, isMockMode, error, loadModel }: {
   );
 }
 
-function TerminalRow({ msg }: { msg: TriageSOSData }) {
+interface MessageCardProps {
+  msg: TriageSOSData;
+  isSelected: boolean;
+  onSelect: (id: string) => void;
+  onUpdateStatus?: (id: string, status: TriageStatus) => void;
+  onRetriage?: (msg: TriageSOSData) => void;
+  isBaseStation: boolean;
+  isAILoaded: boolean;
+}
+
+const MessageCard = memo(function MessageCard({
+  msg,
+  isSelected,
+  onSelect,
+  onUpdateStatus,
+  onRetriage,
+  isBaseStation,
+  isAILoaded,
+}: MessageCardProps) {
+  const [copied, setCopied] = useState(false);
   const color = PRIORITY_COLOR[msg.priority];
   const label = PRIORITY_LABEL[msg.priority];
+  const status = msg.status || 'PENDING';
+  const statusColor = STATUS_COLOR[status];
+
+  const handleCopyId = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    navigator.clipboard.writeText(msg.id);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
 
   return (
-    <div className="flex-col" style={{ padding: '4px', borderBottom: '1px solid var(--brutal-dark-grey)' }}>
-      <div className="flex-row gap-2">
-        <span className="text-sys" style={{ fontSize: 9, color: 'var(--brutal-light-grey)' }}>
-          [{formatTs(msg.timestamp)}]
-        </span>
-        <span className="text-sys" style={{ fontSize: 9, color }}>
-          [{label}]
-        </span>
-        <span className="text-sys truncate" style={{ fontSize: 9, color: 'var(--accent-radar)', flex: 1 }}>
-          {msg.id.slice(0, 8)}
+    <div
+      onClick={() => onSelect(msg.id)}
+      className="flex-col message-card"
+      style={{
+        padding: '6px 8px',
+        borderBottom: '1px solid var(--brutal-dark-grey)',
+        background: isSelected ? 'rgba(0, 255, 102, 0.05)' : 'transparent',
+        borderLeft: isSelected ? '3px solid var(--accent-radar)' : msg.priority === Priority.CRITICAL ? '3px solid var(--accent-crit)' : '3px solid transparent',
+        cursor: 'pointer',
+        transition: 'all 0.1s ease',
+      }}
+    >
+      {/* Header Row */}
+      <div className="flex-row justify-between" style={{ gap: 4 }}>
+        <div className="flex-row gap-1">
+          <span className="text-sys" style={{ fontSize: 8, color: 'var(--brutal-light-grey)' }}>
+            [{formatTs(msg.timestamp)}]
+          </span>
+          <span className="text-sys" style={{ fontSize: 8, color, fontWeight: 700 }}>
+            [{label}]
+          </span>
+          <span className="text-sys" style={{ fontSize: 8, color: statusColor }}>
+            [{status}]
+          </span>
+        </div>
+        <span className="text-sys truncate" style={{ fontSize: 8, color: 'var(--brutal-light-grey)', maxWidth: '90px' }}>
+          TX:{msg.sender.slice(0, 6)}
         </span>
       </div>
-      <p className="text-terminal" style={{ fontSize: 10, color: 'var(--brutal-white)', paddingLeft: 4, marginTop: 2, wordBreak: 'break-all' }}>
+
+      {/* Message Body */}
+      <p className="text-terminal" style={{ fontSize: 10, color: 'var(--brutal-white)', marginTop: 3, wordBreak: 'break-word', lineHeight: 1.3 }}>
         {'>'} {msg.medicalNeed}
       </p>
-      {msg.hazard && msg.hazard !== 'None' && (
-        <p className="text-sys anim-blink-fast" style={{ fontSize: 9, color: 'var(--accent-warn)', paddingLeft: 4, marginTop: 2 }}>
-          [HAZARD_DETECTED: {msg.hazard}]
-        </p>
+
+      {/* Hazard Banner */}
+      {msg.hazard && msg.hazard !== 'None' && msg.hazard !== 'UNPROCESSED' && (
+        <div className="flex-row gap-1" style={{ marginTop: 3 }}>
+          <span className="text-sys anim-blink-fast" style={{ fontSize: 8, color: 'var(--accent-warn)', background: 'rgba(255, 176, 0, 0.1)', padding: '1px 4px' }}>
+            [HAZARD: {msg.hazard}]
+          </span>
+        </div>
+      )}
+
+      {msg.hazard === 'UNPROCESSED' && (
+        <span className="text-sys anim-blink" style={{ fontSize: 8, color: 'var(--accent-warn)', marginTop: 2 }}>
+          [TRIAGE: UNPROCESSED]
+        </span>
+      )}
+
+      {/* Expanded Telemetry Details */}
+      {isSelected && (
+        <div className="flex-col gap-1" style={{ marginTop: 6, paddingTop: 4, borderTop: '1px dashed var(--brutal-light-grey)', background: 'var(--bg-void)', padding: 4 }}>
+          <div className="flex-row justify-between">
+            <span className="text-sys" style={{ fontSize: 8, color: 'var(--brutal-light-grey)' }}>
+              UUID: {msg.id.slice(0, 16)}...
+            </span>
+            <button
+              onClick={handleCopyId}
+              className="text-sys"
+              style={{ fontSize: 8, color: 'var(--accent-radar)', background: 'none', border: 'none', cursor: 'pointer' }}
+            >
+              {copied ? '[COPIED]' : '[COPY_UUID]'}
+            </button>
+          </div>
+          <div className="flex-row justify-between">
+            <span className="text-sys" style={{ fontSize: 8, color: 'var(--brutal-light-grey)' }}>
+              ORIGIN_NODE: {msg.sender}
+            </span>
+          </div>
+          <div className="flex-row justify-between">
+            <span className="text-sys" style={{ fontSize: 8, color: 'var(--brutal-light-grey)' }}>
+              TIME: {new Date(msg.timestamp).toISOString()}
+            </span>
+          </div>
+
+          {/* Action Toolbar */}
+          <div className="flex-row gap-1" style={{ marginTop: 4 }}>
+            {status !== 'ACKNOWLEDGED' && status !== 'RESOLVED' && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUpdateStatus?.(msg.id, 'ACKNOWLEDGED');
+                }}
+                className="btn text-sys"
+                style={{ flex: 1, padding: '3px 0', fontSize: 8, color: 'var(--accent-radar)', borderColor: 'var(--accent-radar)' }}
+              >
+                [ACKNOWLEDGE]
+              </button>
+            )}
+            {status !== 'RESOLVED' && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUpdateStatus?.(msg.id, 'RESOLVED');
+                }}
+                className="btn text-sys"
+                style={{ flex: 1, padding: '3px 0', fontSize: 8, color: 'var(--brutal-white)', borderColor: 'var(--brutal-light-grey)' }}
+              >
+                [RESOLVE]
+              </button>
+            )}
+            {status === 'RESOLVED' && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUpdateStatus?.(msg.id, 'PENDING');
+                }}
+                className="btn text-sys"
+                style={{ flex: 1, padding: '3px 0', fontSize: 8, color: 'var(--accent-warn)', borderColor: 'var(--accent-warn)' }}
+              >
+                [RE-OPEN]
+              </button>
+            )}
+            {isBaseStation && isAILoaded && onRetriage && (
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRetriage(msg);
+                }}
+                className="btn text-sys"
+                style={{ width: '85px', padding: '3px 0', fontSize: 8, color: 'var(--accent-radar)' }}
+              >
+                [AI_TRIAGE]
+              </button>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );
-}
+});
 
 export interface TelemetryPanelProps {
   activeNodes: number;
@@ -110,6 +258,8 @@ export interface TelemetryPanelProps {
   onSetSignaling: (ip: string) => void;
   encryptionKey: string;
   onSetEncryptionKey: (key: string) => void;
+  onUpdateMessageStatus?: (id: string, status: TriageStatus) => void;
+  onRetriageMessage?: (msg: TriageSOSData) => void;
 }
 
 export function TelemetryPanel({
@@ -128,11 +278,74 @@ export function TelemetryPanel({
   onSetSignaling,
   encryptionKey,
   onSetEncryptionKey,
+  onUpdateMessageStatus,
+  onRetriageMessage,
 }: TelemetryPanelProps) {
   const peerCount = Math.max(0, activeNodes - 1);
   const [connectId, setConnectId] = useState('');
   const [signalingIp, setSignalingIp] = useState('');
   const [keyInput, setKeyInput] = useState(encryptionKey);
+
+  const activeFilter = useMessageStore((state) => state.activeFilter);
+  const setActiveFilter = useMessageStore((state) => state.setActiveFilter);
+  const searchQuery = useMessageStore((state) => state.searchQuery);
+  const setSearchQuery = useMessageStore((state) => state.setSearchQuery);
+  const selectedMessageId = useMessageStore((state) => state.selectedMessageId);
+  const setSelectedMessageId = useMessageStore((state) => state.setSelectedMessageId);
+
+  // Filter & Search computation
+  const filteredMessages = useMemo(() => {
+    return messages.filter((msg) => {
+      const status = msg.status || 'PENDING';
+      
+      // Filter match
+      if (activeFilter === 'CRITICAL' && msg.priority !== Priority.CRITICAL) return false;
+      if (activeFilter === 'HAZARD' && (!msg.hazard || msg.hazard === 'None' || msg.hazard === 'UNPROCESSED')) return false;
+      if (activeFilter === 'UNPROCESSED' && msg.hazard !== 'UNPROCESSED') return false;
+      if (activeFilter === 'ACKNOWLEDGED' && status !== 'ACKNOWLEDGED') return false;
+      if (activeFilter === 'RESOLVED' && status !== 'RESOLVED') return false;
+
+      // Search match
+      if (searchQuery.trim()) {
+        const q = searchQuery.toLowerCase();
+        const textMatch = msg.medicalNeed.toLowerCase().includes(q);
+        const senderMatch = msg.sender.toLowerCase().includes(q);
+        const hazardMatch = (msg.hazard || '').toLowerCase().includes(q);
+        const idMatch = msg.id.toLowerCase().includes(q);
+        if (!textMatch && !senderMatch && !hazardMatch && !idMatch) return false;
+      }
+
+      return true;
+    });
+  }, [messages, activeFilter, searchQuery]);
+
+  // Counts for pills
+  const counts = useMemo(() => {
+    let crit = 0;
+    let haz = 0;
+    let unproc = 0;
+    let ack = 0;
+    let res = 0;
+
+    messages.forEach((m) => {
+      if (m.priority === Priority.CRITICAL) crit++;
+      if (m.hazard && m.hazard !== 'None' && m.hazard !== 'UNPROCESSED') haz++;
+      if (m.hazard === 'UNPROCESSED') unproc++;
+      if (m.status === 'ACKNOWLEDGED') ack++;
+      if (m.status === 'RESOLVED') res++;
+    });
+
+    return { all: messages.length, crit, haz, unproc, ack, res };
+  }, [messages]);
+
+  const filterTabs: { id: TriageFilter; label: string; count?: number; color?: string }[] = [
+    { id: 'ALL', label: 'ALL', count: counts.all },
+    { id: 'CRITICAL', label: 'CRIT', count: counts.crit, color: 'var(--accent-crit)' },
+    { id: 'HAZARD', label: 'HAZ', count: counts.haz, color: 'var(--accent-warn)' },
+    { id: 'UNPROCESSED', label: 'RAW', count: counts.unproc },
+    { id: 'ACKNOWLEDGED', label: 'ACK', count: counts.ack, color: 'var(--accent-radar)' },
+    { id: 'RESOLVED', label: 'DONE', count: counts.res },
+  ];
 
   return (
     <div className="flex-col" style={{ width: '100%', height: '100%', background: 'var(--bg-void)' }}>
@@ -257,19 +470,80 @@ export function TelemetryPanel({
         </button>
       </div>
 
-      {/* ── Live Terminal Stream ── */}
+      {/* ── Live Tactical Triage Stream ── */}
       <div className="pane-header">
-        <span className="text-sys" style={{ fontSize: 10, color: 'var(--brutal-white)' }}>[LIVE_STREAM]</span>
-        <span className="text-sys" style={{ fontSize: 9, color: 'var(--brutal-light-grey)' }}>RX:{messages.length}</span>
+        <span className="text-sys" style={{ fontSize: 10, color: 'var(--brutal-white)' }}>[TRIAGE_STREAM]</span>
+        <span className="text-sys" style={{ fontSize: 9, color: 'var(--accent-radar)' }}>
+          {filteredMessages.length}/{messages.length}
+        </span>
       </div>
+
+      {/* Filter Tabs */}
+      <div
+        className="flex-row"
+        style={{
+          background: 'var(--bg-void)',
+          borderBottom: '1px solid var(--brutal-grey)',
+          overflowX: 'auto',
+          padding: '2px 4px',
+          gap: 2,
+        }}
+      >
+        {filterTabs.map((tab) => {
+          const isActive = activeFilter === tab.id;
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => setActiveFilter(tab.id)}
+              className="text-sys"
+              style={{
+                background: isActive ? (tab.color || 'var(--accent-radar)') : 'transparent',
+                color: isActive ? 'var(--bg-void)' : (tab.color || 'var(--brutal-white)'),
+                border: `1px solid ${isActive ? (tab.color || 'var(--accent-radar)') : 'var(--brutal-grey)'}`,
+                padding: '2px 4px',
+                fontSize: 8,
+                fontWeight: 700,
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              {tab.label}{tab.count !== undefined ? `:${tab.count}` : ''}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Search Bar */}
+      <div style={{ padding: '4px 8px', borderBottom: '1px solid var(--brutal-grey)', background: 'var(--brutal-dark-grey)' }}>
+        <input
+          type="text"
+          placeholder="SEARCH (KEYWORD / SENDER / ID)..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          className="input-area text-sys"
+          style={{ width: '100%', fontSize: 9, padding: '3px 6px' }}
+        />
+      </div>
+
+      {/* Stream List */}
       <div style={{ flex: 1, overflowY: 'auto', background: 'var(--brutal-dark-grey)' }}>
-        {messages.length === 0 ? (
-          <div className="text-sys anim-blink" style={{ padding: 8, fontSize: 10, color: 'var(--brutal-light-grey)' }}>
-            [WAITING_FOR_DATA...]
+        {filteredMessages.length === 0 ? (
+          <div className="text-sys anim-blink" style={{ padding: 12, fontSize: 9, color: 'var(--brutal-light-grey)', textAlign: 'center' }}>
+            {messages.length === 0 ? '[WAITING_FOR_MESH_PACKETS...]' : '[NO_PACKETS_MATCH_FILTER]'}
           </div>
         ) : (
-          [...messages].reverse().map((msg) => (
-            <TerminalRow key={msg.id} msg={msg} />
+          [...filteredMessages].reverse().map((msg) => (
+            <MessageCard
+              key={msg.id}
+              msg={msg}
+              isSelected={selectedMessageId === msg.id}
+              onSelect={(id) => setSelectedMessageId(selectedMessageId === id ? null : id)}
+              onUpdateStatus={onUpdateMessageStatus}
+              onRetriage={onRetriageMessage}
+              isBaseStation={nodeRole === 'BASE_STATION'}
+              isAILoaded={isAILoaded}
+            />
           ))
         )}
       </div>

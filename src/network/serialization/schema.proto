@@ -13,4 +13,5 @@ message TriageSOS {
   string medicalNeed = 4;
   string hazard = 5;
   uint64 timestamp = 6;
+  string status = 7;
 }
