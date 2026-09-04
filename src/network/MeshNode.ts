@@ -183,7 +183,7 @@ export class MeshNode {
           this.connectToWebRTCPeer(peerId);
         }
       }
-    } catch (err) {
+    } catch {
       // Ignore network errors on polling
     }
   }
