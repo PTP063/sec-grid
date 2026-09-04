@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { TriageSOSData, TriageStatus } from '../network/serialization/Serializer';
-import { saveMessageToWAL, loadAllMessagesFromWAL } from './WAL';
+import { appendLog, reconstituteFromWAL } from '../storage/WAL';
 
 export type TriageFilter = 'ALL' | 'CRITICAL' | 'HAZARD' | 'UNPROCESSED' | 'ACKNOWLEDGED' | 'RESOLVED';
 
@@ -41,12 +41,8 @@ export const useMessageStore = create<MessageState>((set, get) => ({
 
   initWAL: async () => {
     try {
-      const logs = await loadAllMessagesFromWAL();
-      const normalized = logs.map(m => ({
-        ...m,
-        status: m.status || 'PENDING',
-      }));
-      set({ messages: normalized.sort((a, b) => a.timestamp - b.timestamp) });
+      const logs = await reconstituteFromWAL();
+      set({ messages: logs });
     } catch (err) {
       console.error('[WAL] Failed to load history:', err);
     }
@@ -73,7 +69,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
         normalized.status = existing.status;
       }
 
-      saveMessageToWAL(normalized).catch(err => console.error('[WAL] Save failed:', err));
+      appendLog(normalized).catch(err => console.error('[WAL] Save failed:', err));
 
       return {
         messages: [...state.messages.filter(m => m.id !== normalized.id), normalized],
@@ -91,7 +87,7 @@ export const useMessageStore = create<MessageState>((set, get) => ({
       status,
     };
 
-    saveMessageToWAL(updated).catch(err => console.error('[WAL] Save status failed:', err));
+    appendLog(updated).catch(err => console.error('[WAL] Save status failed:', err));
 
     set({
       messages: state.messages.map(m => (m.id === id ? updated : m)),

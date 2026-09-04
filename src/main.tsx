@@ -6,8 +6,18 @@ import { ErrorBoundary } from './ErrorBoundary.tsx'
 import { ErrorOverlay } from './components/ui/ErrorOverlay.tsx'
 import { useErrorStore } from './store/useErrorStore.ts'
 import { registerSW } from 'virtual:pwa-register'
+import { initDevicePersistence, initAudioKeepAlive } from './utils/lifecycle'
 
+// Register deterministic PWA Service Worker
 registerSW({ immediate: true })
+
+// Request and verify persistent storage under low storage pressure
+initDevicePersistence().catch((err) =>
+  console.error('[Main] Device persistence request failed:', err)
+)
+
+// Initialize mobile background audio keep-alive (unlocked on first user interaction)
+initAudioKeepAlive()
 
 // Capture global asynchronous errors and promise rejections
 window.addEventListener('unhandledrejection', (event) => {

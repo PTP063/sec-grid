@@ -26,30 +26,15 @@ export default defineConfig({
     basicSsl(),
     react(),
     VitePWA({
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
       registerType: 'autoUpdate',
       injectRegister: 'auto',
-      workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
-        // Exclude WebAssembly and any large model files from the aggressive precache
-        // WebLLM manages its own IndexedDB cache for models at runtime
+      injectManifest: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,proto,json}'],
         globIgnores: ['**/*.wasm'],
         maximumFileSizeToCacheInBytes: 10000000,
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/huggingface\.co\/.*/i,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'hf-models-cache',
-              expiration: {
-                maxEntries: 50,
-                maxAgeSeconds: 60 * 60 * 24 * 30, // 30 days
-              },
-              cacheableResponse: {
-                statuses: [0, 200]
-              }
-            }
-          }
-        ]
       },
       manifest: {
         name: 'Mesh·OS Tactical',

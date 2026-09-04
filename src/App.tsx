@@ -18,6 +18,7 @@ import { TelemetryPanel } from './components/ui/TelemetryPanel';
 import { AlertBanner } from './components/ui/AlertBanner';
 import { QuickMacros } from './components/ui/QuickMacros';
 import { playTacticalAlert, playAckChirp, playResolvedChime } from './utils/audio';
+import { toggleSentryMode, onWakeLockChange } from './utils/lifecycle';
 
 export default function App() {
   const { meshNode, metadataList, peerjsId, nodeRole, encryptionKey, initMesh, destroyMesh, connectToPeer, setNodeRole, setEncryptionKey } = useMeshStore();
@@ -39,6 +40,11 @@ export default function App() {
 
   const [inputText, setInputText] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [isSentryActive, setIsSentryActive] = useState(false);
+
+  useEffect(() => {
+    return onWakeLockChange((active) => setIsSentryActive(active));
+  }, []);
 
   useEffect(() => {
     // Automatically use the host IP for the signaling server so devices on Wi-Fi discover each other natively
@@ -241,6 +247,21 @@ export default function App() {
           </span>
         </div>
         <div className="flex-row gap-3">
+          <button
+            type="button"
+            onClick={toggleSentryMode}
+            className="text-sys"
+            style={{
+              background: 'none',
+              border: `1px solid ${isSentryActive ? 'var(--accent-radar)' : 'var(--brutal-light-grey)'}`,
+              color: isSentryActive ? 'var(--accent-radar)' : 'var(--brutal-light-grey)',
+              fontSize: 9,
+              padding: '2px 6px',
+              cursor: 'pointer',
+            }}
+          >
+            [SENTRY: {isSentryActive ? 'ACTIVE (WAKE LOCK)' : 'STANDBY'}]
+          </button>
           <button
             type="button"
             onClick={toggleAudio}
