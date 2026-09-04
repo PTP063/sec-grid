@@ -26,48 +26,12 @@ function formatTs(ts: number): string {
   });
 }
 
-function AIProgressBar({ progress, isLoaded, isMockMode, error, loadModel }: {
-  progress: number;
-  isLoaded: boolean;
-  isMockMode?: boolean;
-  error: string | null;
-  loadModel: () => void;
-}) {
-  if (error) {
-    return (
-      <div className="flex-col gap-1">
-        <span className="text-sys truncate anim-blink" style={{ fontSize: 10, color: 'var(--accent-crit)' }} title={error}>
-          [WARN: AI_ERROR]
-        </span>
-        <span className="text-terminal" style={{ fontSize: 9, color: 'var(--accent-crit)' }}>{error}</span>
-      </div>
-    );
-  }
-  if (!isLoaded && progress === 0) {
-    return (
-      <button className="btn" onClick={loadModel}>
-        [INIT AI ENGINE]
-      </button>
-    );
-  }
-  if (isLoaded) {
-    const color = isMockMode ? 'var(--accent-warn)' : 'var(--accent-radar)';
-    const text = isMockMode ? '[WARN: AI_MOCK]' : '[SYS: AI_ONLINE]';
-    return (
-      <span className="text-sys" style={{ fontSize: 10, color }}>
-        {text}
-      </span>
-    );
-  }
+function TriageEngineBadge() {
   return (
-    <div className="flex-col gap-1 w-full">
-      <div className="flex-row justify-between">
-        <span className="text-sys" style={{ fontSize: 9, color: 'var(--brutal-white)' }}>[SYS: DOWNLOADING_LLM]</span>
-        <span className="text-sys" style={{ fontSize: 9, color: 'var(--accent-radar)' }}>{progress}%</span>
-      </div>
-      <div className="progress-track">
-        <div className="progress-fill" style={{ width: `${progress}%` }} />
-      </div>
+    <div className="flex-row items-center gap-1">
+      <span className="text-sys" style={{ fontSize: 10, color: 'var(--accent-radar)' }}>
+        [SYS: TRIAGE_ONLINE (START/SALT &lt;0.2ms)]
+      </span>
     </div>
   );
 }
@@ -78,8 +42,6 @@ interface MessageCardProps {
   onSelect: (id: string) => void;
   onUpdateStatus?: (id: string, status: TriageStatus) => void;
   onRetriage?: (msg: TriageSOSData) => void;
-  isBaseStation: boolean;
-  isAILoaded: boolean;
 }
 
 const MessageCard = memo(function MessageCard({
@@ -88,8 +50,6 @@ const MessageCard = memo(function MessageCard({
   onSelect,
   onUpdateStatus,
   onRetriage,
-  isBaseStation,
-  isAILoaded,
 }: MessageCardProps) {
   const [copied, setCopied] = useState(false);
   const color = PRIORITY_COLOR[msg.priority];
@@ -222,7 +182,7 @@ const MessageCard = memo(function MessageCard({
                 [RE-OPEN]
               </button>
             )}
-            {isBaseStation && isAILoaded && onRetriage && (
+            {onRetriage && (
               <button
                 type="button"
                 onClick={(e) => {
@@ -232,7 +192,7 @@ const MessageCard = memo(function MessageCard({
                 className="btn text-sys"
                 style={{ width: '85px', padding: '3px 0', fontSize: 8, color: 'var(--accent-radar)' }}
               >
-                [AI_TRIAGE]
+                [RE-TRIAGE]
               </button>
             )}
           </div>
@@ -244,15 +204,15 @@ const MessageCard = memo(function MessageCard({
 
 export interface TelemetryPanelProps {
   activeNodes: number;
-  aiProgress: number;
-  isAILoaded: boolean;
+  aiProgress?: number;
+  isAILoaded?: boolean;
   isMockMode?: boolean;
-  aiError: string | null;
+  aiError?: string | null;
   messages: TriageSOSData[];
   compressionMetric: string;
   peerjsId?: string | null;
   onConnectPeer?: (id: string) => void;
-  loadModel: () => void;
+  loadModel?: () => void;
   nodeRole: 'FIELD_RADIO' | 'BASE_STATION';
   onRoleToggle: (role: 'FIELD_RADIO' | 'BASE_STATION') => void;
   onSetSignaling: (ip: string) => void;
@@ -264,15 +224,15 @@ export interface TelemetryPanelProps {
 
 export function TelemetryPanel({
   activeNodes,
-  aiProgress,
-  isAILoaded,
-  isMockMode,
-  aiError,
+  aiProgress: _aiProgress,
+  isAILoaded: _isAILoaded,
+  isMockMode: _isMockMode,
+  aiError: _aiError,
   messages,
   compressionMetric,
   peerjsId,
   onConnectPeer,
-  loadModel,
+  loadModel: _loadModel,
   nodeRole,
   onRoleToggle,
   onSetSignaling,
@@ -367,13 +327,7 @@ export function TelemetryPanel({
         </div>
         
         <div className="brutal-box flex-col gap-2" style={{ marginTop: 4 }}>
-          {nodeRole === 'BASE_STATION' ? (
-            <AIProgressBar progress={aiProgress} isLoaded={isAILoaded} isMockMode={isMockMode} error={aiError} loadModel={loadModel} />
-          ) : (
-            <span className="text-sys" style={{ fontSize: 10, color: 'var(--brutal-light-grey)' }}>
-              [AI_ENGINE_DISABLED: FIELD_RADIO_MODE]
-            </span>
-          )}
+          <TriageEngineBadge />
           {compressionMetric && (
             <span className="text-sys" style={{ fontSize: 9, color: 'var(--accent-radar)' }}>
               [PROTOBUF: {compressionMetric}]
@@ -541,8 +495,6 @@ export function TelemetryPanel({
               onSelect={(id) => setSelectedMessageId(selectedMessageId === id ? null : id)}
               onUpdateStatus={onUpdateMessageStatus}
               onRetriage={onRetriageMessage}
-              isBaseStation={nodeRole === 'BASE_STATION'}
-              isAILoaded={isAILoaded}
             />
           ))
         )}

@@ -17,6 +17,13 @@ export const WirePacketType = {
 } as const;
 export type WirePacketType = typeof WirePacketType[keyof typeof WirePacketType];
 
+export const TriageMethod = {
+  MANUAL: 0,
+  HEURISTIC: 1,
+  MANUAL_OVERRIDE: 2,
+} as const;
+export type TriageMethod = typeof TriageMethod[keyof typeof TriageMethod];
+
 export type TriageStatus = 'PENDING' | 'ACKNOWLEDGED' | 'RESOLVED';
 
 export interface TriageSOSData {
@@ -27,6 +34,7 @@ export interface TriageSOSData {
   hazard: string;
   timestamp: number;
   status?: TriageStatus;
+  triageMethod?: TriageMethod;
 }
 
 export interface EnvelopeData {
@@ -142,6 +150,7 @@ export function encodeTriage(data: TriageSOSData): Uint8Array {
   const payload = {
     ...data,
     status: data.status || 'PENDING',
+    triageMethod: data.triageMethod ?? TriageMethod.HEURISTIC,
     id: uuidToBytes(data.id),
     sender: uuidToBytes(data.sender),
   };
@@ -169,6 +178,9 @@ export function decodeTriage(buffer: Uint8Array): TriageSOSData {
   return {
     ...obj,
     status: ((obj as { status?: string }).status || 'PENDING') as TriageStatus,
+    triageMethod: typeof (obj as { triageMethod?: number }).triageMethod === 'number'
+      ? ((obj as { triageMethod: number }).triageMethod as TriageMethod)
+      : TriageMethod.HEURISTIC,
     id: bytesToUuid(message.id as Uint8Array),
     sender: bytesToUuid(message.sender as Uint8Array),
   } as unknown as TriageSOSData;

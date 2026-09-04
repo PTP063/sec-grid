@@ -1,5 +1,6 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 import type { TriageSOSData } from '../network/serialization/Serializer';
+import { evaluateEmergencyTriage } from '../triage/DeterministicTriage';
 
 export interface MeshDB extends DBSchema {
   triageLogs: {
@@ -157,10 +158,22 @@ export async function reconstituteFromWAL(): Promise<TriageSOSData[]> {
 
     for (const record of records) {
       if (record && typeof record.id === 'string' && typeof record.timestamp === 'number') {
-        const normalized: TriageSOSData = {
+        let normalized: TriageSOSData = {
           ...record,
           status: record.status || 'PENDING',
         };
+
+        // Lazy migration: if legacy record has UNPROCESSED hazard, run deterministic triage in-memory
+        if (normalized.hazard === 'UNPROCESSED' || normalized.triageMethod === undefined) {
+          const evalResult = evaluateEmergencyTriage(normalized.medicalNeed);
+          normalized = {
+            ...normalized,
+            priority: normalized.hazard === 'UNPROCESSED' ? evalResult.priority : normalized.priority,
+            hazard: normalized.hazard === 'UNPROCESSED' ? evalResult.hazard : normalized.hazard,
+            triageMethod: evalResult.triageMethod,
+          };
+        }
+
         inMemoryCache.set(normalized.id, normalized);
         validRecords.push(normalized);
       } else {

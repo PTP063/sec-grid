@@ -1,7 +1,3 @@
-/**
- * Embedded Protocol Buffers schema definition for Mesh·OS.
- * Provides isomorphic schema parsing across Vite, Service Worker, and Node.js runtimes.
- */
 export const schemaProtoStr = `syntax = "proto3";
 
 enum Priority {
@@ -16,6 +12,12 @@ enum PacketType {
   ACK = 2;
 }
 
+enum TriageMethod {
+  MANUAL = 0;
+  HEURISTIC = 1;
+  MANUAL_OVERRIDE = 2;
+}
+
 // Inner triage payload
 message TriageSOS {
   bytes id = 1;          // 16-byte compacted UUID
@@ -25,6 +27,7 @@ message TriageSOS {
   string hazard = 5;
   uint64 timestamp = 6;
   string status = 7;
+  TriageMethod triageMethod = 8;
 }
 
 // Outer network envelope for zero-knowledge multi-hop relaying
