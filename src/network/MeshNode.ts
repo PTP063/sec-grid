@@ -6,7 +6,8 @@ import type {
   PacketType,
 } from './types';
 import { DeduplicationCache } from './DeduplicationCache';
-import { encryptPayload, decryptPayload } from './Crypto';
+import { sealPayload, unsealPayload } from '../security/Crypto';
+import { relayWirePacket, unpackWirePacket } from './Envelope';
 
 import Peer, { type DataConnection } from 'peerjs';
 
@@ -196,7 +197,7 @@ export class MeshNode {
     
     if (payload instanceof Uint8Array && this.encryptionKey) {
       try {
-        finalPayload = await encryptPayload(payload, this.encryptionKey) as unknown as T;
+        finalPayload = (await sealPayload(payload, this.encryptionKey, this.id)) as unknown as T;
       } catch (err) {
         console.error('[MeshNode] Encryption failed, dropping packet:', err);
         return;
@@ -276,6 +277,43 @@ export class MeshNode {
   // ── Private ───────────────────────────────────────────────────────────────
 
   private async handleIncoming(event: MessageEvent): Promise<void> {
+    const rawData = event.data;
+
+    // Handle binary wire frames directly if transmitted over WebRTC / BroadcastChannel
+    if (rawData instanceof Uint8Array || rawData instanceof ArrayBuffer) {
+      const buffer = rawData instanceof ArrayBuffer ? new Uint8Array(rawData) : rawData;
+
+      // 1. Fast zero-knowledge relaying: mutate TTL/copiesLeft and re-broadcast with ZERO crypto!
+      const relayed = relayWirePacket(buffer, this.id);
+      if (relayed) {
+        this.channel.postMessage(relayed);
+        for (const conn of this.webrtcConnections.values()) {
+          try {
+            conn.send(relayed);
+          } catch {}
+        }
+      }
+
+      // 2. Unpack for local delivery if destination matches or broadcast
+      const unpacked = await unpackWirePacket(buffer, this.encryptionKey, this.id);
+      if (unpacked && unpacked.isForUs && unpacked.decryptedPayload) {
+        this.touchPeer(unpacked.header.senderId);
+        this.packetsReceived++;
+        this.emitPacket({
+          header: {
+            packetId: unpacked.header.packetId,
+            senderId: unpacked.header.senderId,
+            targetId: unpacked.header.recipientId,
+            ttl: unpacked.header.ttl,
+            timestamp: unpacked.header.timestamp,
+            type: unpacked.header.type,
+          },
+          payload: unpacked.decryptedPayload,
+        });
+      }
+      return;
+    }
+
     const packet = event.data as NetworkPacket<unknown>;
 
     // Structural guard
@@ -317,11 +355,11 @@ export class MeshNode {
       // Deliver to local UI only if addressed to us or broadcast
       if (!targetId || targetId === this.id) {
         if (packet.payload instanceof Uint8Array && this.encryptionKey) {
-          try {
-            const decrypted = await decryptPayload(packet.payload, this.encryptionKey);
+          const decrypted = await unsealPayload(packet.payload, this.encryptionKey);
+          if (decrypted) {
             this.emitPacket({ ...packet, payload: decrypted });
-          } catch (err) {
-            console.warn('[MeshNode] Packet dropped: Decryption failed (wrong key?).', err);
+          } else {
+            console.warn('[MeshNode] Packet dropped: Auth tag mismatch or payload corrupted.');
           }
         } else {
           this.emitPacket(packet);
