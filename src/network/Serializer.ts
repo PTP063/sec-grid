@@ -1,6 +1,5 @@
 import * as protobuf from 'protobufjs';
-// @ts-ignore — Vite raw string import
-import schemaStr from '../proto/schema.proto?raw';
+import { schemaProtoStr } from '../proto/schema';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -108,9 +107,7 @@ export async function initSerializer(): Promise<void> {
 
   initPromise = (async () => {
     try {
-      root = protobuf.parse(schemaStr).root;
-      TriageSOSMessage = root.lookupType('TriageSOS');
-      NetworkEnvelopeMessage = root.lookupType('NetworkEnvelope');
+      ensureInitialized();
     } catch (err) {
       initPromise = null;
       console.error('[Serializer] Protobuf schema parse failed:', err);
@@ -121,13 +118,23 @@ export async function initSerializer(): Promise<void> {
   return initPromise;
 }
 
+function ensureInitialized(): void {
+  if (!root) {
+    root = protobuf.parse(schemaProtoStr).root;
+    TriageSOSMessage = root.lookupType('TriageSOS');
+    NetworkEnvelopeMessage = root.lookupType('NetworkEnvelope');
+  }
+}
+
 export function isSerializerReady(): boolean {
+  ensureInitialized();
   return TriageSOSMessage !== null && NetworkEnvelopeMessage !== null;
 }
 
 // ─── TriageSOS Encoders / Decoders ──────────────────────────────────────────
 
 export function encodeTriage(data: TriageSOSData): Uint8Array {
+  ensureInitialized();
   if (!TriageSOSMessage) {
     throw new Error('[Serializer] Not initialised — call initSerializer() first.');
   }
@@ -147,6 +154,7 @@ export function encodeTriage(data: TriageSOSData): Uint8Array {
 }
 
 export function decodeTriage(buffer: Uint8Array): TriageSOSData {
+  ensureInitialized();
   if (!TriageSOSMessage) {
     throw new Error('[Serializer] Not initialised — call initSerializer() first.');
   }
@@ -181,6 +189,7 @@ const WIRE_TO_TYPE: Record<number, 'HEARTBEAT' | 'DATA' | 'ACK'> = {
 };
 
 export function encodeEnvelope(envelope: EnvelopeData): Uint8Array {
+  ensureInitialized();
   if (!NetworkEnvelopeMessage) {
     throw new Error('[Serializer] Not initialised — call initSerializer() first.');
   }
@@ -205,6 +214,7 @@ export function encodeEnvelope(envelope: EnvelopeData): Uint8Array {
 }
 
 export function decodeEnvelope(buffer: Uint8Array): EnvelopeData {
+  ensureInitialized();
   if (!NetworkEnvelopeMessage) {
     throw new Error('[Serializer] Not initialised — call initSerializer() first.');
   }
