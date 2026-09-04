@@ -1,18 +1,17 @@
 <div align="center">
 
-# 🌐 Mesh·OS (sec-grid)
-**Zero-Infrastructure Emergency Mesh Network with Decentralized AI Triage & End-to-End Encryption**
+# 🌐 Mesh·OS
+**Zero-Infrastructure Emergency Delay-Tolerant Mesh Operating System with Deterministic START/SALT Triage & Hardware-Bounded Anti-Entropy Sync**
 
-[![React](https://img.shields.io/badge/React-18-blue.svg?style=for-the-badge&logo=react)](https://reactjs.org/)
-[![Vite](https://img.shields.io/badge/Vite-5-purple.svg?style=for-the-badge&logo=vite)](https://vitejs.dev/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue.svg?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
-[![WebRTC](https://img.shields.io/badge/WebRTC-P2P_Mesh-orange.svg?style=for-the-badge&logo=webrtc)](https://webrtc.org/)
-[![WebLLM](https://img.shields.io/badge/WebLLM-On--Device_AI-blueviolet.svg?style=for-the-badge)](https://webllm.mlc.ai/)
-[![Web Crypto](https://img.shields.io/badge/Web_Crypto-AES--GCM_256-green.svg?style=for-the-badge)](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API)
-[![PWA](https://img.shields.io/badge/PWA-Offline_First-red.svg?style=for-the-badge&logo=pwa)](https://web.dev/progressive-web-apps/)
-[![Vercel](https://img.shields.io/badge/Deployed_on-Vercel-black.svg?style=for-the-badge&logo=vercel)](https://sec-grid.vercel.app)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-blue.svg?style=for-the-badge&logo=typescript)](https://www.typescriptlang.org/)
+[![Vite](https://img.shields.io/badge/Vite-8.2-purple.svg?style=for-the-badge&logo=vite)](https://vitejs.dev/)
+[![Capacitor](https://img.shields.io/badge/Capacitor-8.5-119EFF.svg?style=for-the-badge&logo=capacitor)](https://capacitorjs.com/)
+[![Native BLE](https://img.shields.io/badge/Bluetooth_LE-GATT_Mesh-0082FC.svg?style=for-the-badge&logo=bluetooth)](https://www.bluetooth.com/)
+[![Protobuf](https://img.shields.io/badge/Protocol_Buffers-Binary_Wire-4285F4.svg?style=for-the-badge&logo=google)](https://protobuf.dev/)
+[![PWA](https://img.shields.io/badge/PWA-711_KB_Precache-red.svg?style=for-the-badge&logo=pwa)](https://web.dev/progressive-web-apps/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](./LICENSE)
 
-[**Live Demo**](https://sec-grid.vercel.app) • [**Architecture**](#-architecture) • [**Features**](#-key-features) • [**Quick Start**](#-getting-started) • [**Drop Node Relay**](#-hardware--drop-node-relay)
+[**Live Repository**](https://github.com/PTP063/sec-grid) • [**Architecture**](#-system-architecture) • [**Triage Engine**](#-deterministic-startsalt-triage-engine) • [**DTN & Anti-Entropy**](#-delay-tolerant-networking--anti-entropy) • [**Field Verification**](#-hardware-verification--field-testing) • [**Quick Start**](#-getting-started)
 
 ---
 
@@ -20,108 +19,207 @@
 
 </div>
 
+---
+
 ## 🌪️ The Problem
-During catastrophic infrastructure failures—natural disasters, power grid collapses, conflict zones, or localized internet blackouts—traditional centralized telecommunications (cellular towers, ISPs, DNS) are vulnerable single points of failure. Critical emergency communication, resource coordination, and life-saving triage cannot wait for central servers to come back online.
+During catastrophic infrastructure blackouts—earthquakes, hurricanes, grid collapses, or conflict zones—centralized telecommunications (cellular base stations, fiber backbones, ISPs, DNS) are vulnerable single points of failure. In true disaster environments:
+1. **Zero Connectivity**: Mobile devices cannot reach external cloud servers or download heavy assets.
+2. **Extreme Contact Windows**: Disconnected search-and-rescue clusters encounter each other only for brief **3- to 10-second windows** (responders walking past each other or passing vehicles).
+3. **Severe Battery & Storage Limits**: Edge mobile phones cannot run battery-draining on-device LLMs (e.g. 2GB neural weights via WebGPU) or flood degraded BLE channels with unconstrained packet dumps.
+
+---
 
 ## 💡 The Solution: Mesh·OS
-**Mesh·OS** is a resilient, zero-infrastructure browser operating system designed for disconnected disaster scenarios. It forms dynamic peer-to-peer mesh networks across available client devices (phones, laptops, tablets, stationary relays) using **WebRTC DataChannels** and **BroadcastChannel**. 
 
-Emergency SOS signals are prioritized via **on-device local AI models** running directly in the browser via WebAssembly & WebGPU. Messages are cryptographically sealed with **AES-GCM 256-bit encryption** and compressed using **Protocol Buffers**, enabling survivable communication across congested or intermittent channels.
+**Mesh·OS** is a zero-infrastructure, offline-first emergency mesh operating system designed for edge mobile devices and field base stations. It operates seamlessly as a hardened Progressive Web App (PWA) and Capacitor native hybrid application utilizing autonomous Bluetooth Low Energy (BLE) peripheral/central roles.
 
----
-
-## ✨ Key Features
-
-- **📡 True P2P Multi-Hop Mesh Network**  
-  Zero central coordination. Nodes connect directly via WebRTC DataChannels with automatic topology discovery, multi-hop routing, and fallback to `BroadcastChannel` for same-device cross-tab communication.
-
-- **🔒 End-to-End Cryptography (Web Crypto API)**  
-  Every transmission is secured with hardware-accelerated **AES-GCM 256-bit** encryption and SHA-256 integrity verification. Tamper-evident payloads protect sensitive civilian and rescue team transmissions.
-
-- **🧠 Non-Blocking Distributed AI Triage**  
-  Emergency signals are analyzed and prioritized (CRITICAL, HIGH, MEDIUM, LOW) by local LLMs (`Phi-3.5` / `Llama-3.2`) executing in a dedicated background **Web Worker**. Features automatic zero-lag heuristic fallback if WebGPU is unavailable on low-end hardware.
-
-- **⚡ High-Compression Protocol Buffers (Protobuf)**  
-  All packet schemas are compiled to binary protobuf payloads, reducing bandwidth usage by up to 90% compared to standard JSON over degraded links.
-
-- **🛰️ Stationary Hardware Drop-Node Support**  
-  Includes a standalone lightweight Node.js relay server ([`drop-node-server.js`](./drop-node-server.js)) that can run on Raspberry Pi, local field routers, or solar-powered emergency beacons to bridge fragmented mesh clusters.
-
-- **📊 Live Interactive Topology & Telemetry**  
-  Real-time visual node graph powered by **React Flow** with active link pulsation, battery level indicators, latency benchmarks, signal strength meters, and node role badges (Coordinator, Relay, Sensor, Edge).
-
-- **📱 Offline-First Progressive Web App (PWA)**  
-  Full service worker caching allows the application to launch and run indefinitely in airplane mode or disconnected environments after initial load.
-
-- **🛡️ Censorship-Resistant Edge Proxies**  
-  Vercel Edge middleware proxies dynamically route AI weight downloads and model metadata through edge endpoints (`/hf-proxy` & `/api`), bypassing regional ISP blocks on HuggingFace.
+### Core Architectural Pillars:
+- **⚡ Sub-Millisecond Deterministic Triage**: Replaced heavy on-device neural runtimes with a zero-allocation, sub-millisecond (**<0.04 ms**) START/SALT mass-casualty triage engine with typo resilience and multilingual dictionaries (`EN`, `ES`, `HI`).
+- **📦 711 KB Total Precache Footprint**: Reduced application payload by **89.4%** (from 6.7 MB down to 711 KB), ensuring instantaneous airplane-mode bootstrapping from flash storage.
+- **🔄 Delay-Tolerant Network (DTN) Anti-Entropy Sync**: Opportunistic store-and-forward data muling with sub-512B binary Originator-Monotonic Sequence Vectors and Ack-Floors for zero-overhead delta negotiation ($A \setminus B$).
+- **🛡️ Storage-Bounded Bounded WAL & Priority Queue**: Strict 50 MB hard storage ceiling with a 4-tier deterministic eviction cascade and immutable preservation of local `CRITICAL` triage records.
+- **📡 Native BLE Collision-Avoidance Transport**: Jittered duty-cycle scheduler preventing Android Fluoride Status 133 connection exhaustion, paired with asymmetric ATT MTU chunk slicing and real-time link-layer RF telemetry.
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ System Architecture
 
 ```mermaid
 flowchart TD
-    subgraph Browser Node ["Mesh·OS Client Node"]
-        UI["React Flow & Telemetry UI"]
-        Store["Zustand State Store\n(Messages, AI, Network Status)"]
-        
-        subgraph Core ["Mesh Core Layer"]
-            MeshNode["MeshNode Controller\n(Routing & Topology)"]
-            Crypto["Crypto Engine\n(AES-GCM 256-bit)"]
-            Proto["Protobuf Serializer\n(Binary Compression)"]
-        end
-
-        subgraph Worker ["Dedicated AI Web Worker"]
-            AIWorker["ai.worker.ts"]
-            WebLLM["WebLLM Engine\n(Phi-3.5 / WebGPU)"]
-            Heuristics["Heuristic Triage\n(Instant Fallback)"]
-        end
-
-        UI <--> Store
-        Store <--> MeshNode
-        MeshNode <--> Crypto
-        Crypto <--> Proto
-        MeshNode <--> AIWorker
-        AIWorker --> WebLLM
-        AIWorker --> Heuristics
+    subgraph UI ["High-Contrast Tactical Interface"]
+        HUD["TacticalTriageHUD\n(START/SALT Tiers & One-Tap Hazards)"]
+        Graph["React Flow Topology Graph\n(Real-Time Link Quality & PER)"]
+        Stream["TriageStream Feed\n(Audit Trails & Reverse ACK Sync)"]
     end
 
-    subgraph External Links ["P2P Transport Mesh"]
-        RTC["WebRTC DataChannels\n(Direct P2P PeerJS)"]
-        BC["BroadcastChannel\n(Local Cross-Tab)"]
-        DropNode["Drop-Node Relay\n(WebSocket Hardware Bridge)"]
+    subgraph Triage ["Deterministic Triage Subsystem (<0.04ms)"]
+        Normalizer["Diacritics Normalizer\n(NFD Diacritics Stripping)"]
+        Tokenizer["Stem Regex & Bounded Damerau-Levenshtein (D<=1)"]
+        Lexicons["Static Multilingual Dictionaries\n(EN, ES, HI Stems)"]
+        Escalation["Monotonic Escalation Resolver\n(max(Manual, Heuristic) + Responder Override)"]
     end
 
-    Proto <==> RTC
-    Proto <==> BC
-    Proto <==> DropNode
+    subgraph Storage ["Bounded Storage Subsystem"]
+        WAL["IndexedDB Write-Ahead Log (WAL)\n(Lazy In-Memory Migration)"]
+        StorageMgr["StorageManager (50 MB Hard Ceiling)\n(4-Tier Eviction Cascade)"]
+    end
+
+    subgraph DTN ["DTN & Anti-Entropy Engine"]
+        VectorSync["AntiEntropy Vector Exchange\n(Sub-512B Monotonic Frame & Ack-Floor)"]
+        TxQueue["TransmissionQueue (50 KB Airtime Budget)\n(CRITICAL > HIGH > LOW & Atomic CAS Copy Splitting)"]
+    end
+
+    subgraph Transport ["Physical Link Layer"]
+        BleSched["BleScheduler\n(Tiered Jitter & Status 133 Queue)"]
+        BleTrans["BleTransport\n(Asymmetric ATT MTU Slicing 23B-512B)"]
+        Telemetry["BleTelemetry\n(EMA RSSI, RTT, PER, Airtime Utilization)"]
+        Proto["Protobuf Serializer\n(schema.proto & Binary Wire Framing)"]
+    end
+
+    HUD --> Normalizer --> Tokenizer --> Lexicons --> Escalation
+    Escalation --> WAL
+    WAL --> StorageMgr
+    WAL --> TxQueue
+    TxQueue --> VectorSync
+    VectorSync --> Proto
+    Proto --> BleTrans
+    BleSched --> BleTrans
+    BleTrans --> Telemetry
+    Telemetry --> Graph
+    WAL --> Stream
 ```
+
+---
+
+## 🩺 Deterministic START/SALT Triage Engine
+
+In an off-grid mass-casualty disaster, non-deterministic neural networks that download gigabytes of weights are operational liabilities. Mesh·OS implements a **100% deterministic, zero-dependency, sub-millisecond triage engine** conforming to international **START** (Simple Triage and Rapid Treatment) and **SALT** protocols.
+
+### 1. Classification & Vitals Ingestion
+- **`CRITICAL` (Red / Immediate)**: Catastrophic trauma (arterial hemorrhage, apnea, pulseless shock, crush entrapment, severe burns, infant distress).
+- **`HIGH` (Yellow / Delayed)**: Severe non-ambulatory injuries, compound fractures, smoke inhalation, deep lacerations.
+- **`LOW` (Green / Minor)**: Ambulatory ("walking wounded"), minor abrasions, food/water/blanket requests.
+- **Vitals Integration**: Accepts physiological inputs (respiration rate, radial pulse/perfusion, mental status commands).
+
+### 2. Typo Resilience via Bounded Damerau-Levenshtein ($D \le 1$)
+Panicked victims frequently submit degraded text. Unmatched tokens $\ge 5$ characters are checked against critical life-threat roots using an allocation-free Damerau-Levenshtein distance bounded strictly to $D \le 1$:
+- `"hemarage"` $\to$ matches root `"hemorrhage"` $\to$ **CRITICAL**
+- `"unconcious"` $\to$ matches root `"unconscious"` $\to$ **CRITICAL**
+- `"cant breth"` $\to$ matches root `"breath"` $\to$ **CRITICAL**
+- `"crushd"` $\to$ matches root `"crushed"` $\to$ **CRITICAL**
+
+### 3. Decoupled Multilingual Lexicons
+Emergency roots and situational hazard patterns are partitioned into static lookup tables:
+- [`src/triage/lexicons/en.ts`](./src/triage/lexicons/en.ts): English trauma stems.
+- [`src/triage/lexicons/es.ts`](./src/triage/lexicons/es.ts): Spanish disaster vocabulary (`sangrado`, `inconsciente`, `no respira`, `atrapado`, `fuego`).
+- [`src/triage/lexicons/hi.ts`](./src/triage/lexicons/hi.ts): Hindi / Hinglish disaster vocabulary (`khoon`, `saans`, `behosh`, `daba hua`, `aag`, `bijli ka taar`).
+
+### 4. Monotonic Escalation & Responder Override Invariant
+- **Civilian Input**: Enforces a strictly upward monotonic rule:
+  $$\text{FinalPriority} = \max(\text{ManualPriority}, \text{HeuristicPriority})$$
+  A civilian tapping `🟢 STABLE` while entering `"spurting blood under rubble"` is automatically escalated to `🔴 CRITICAL` with a HUD alert chip.
+- **Certified Responder Override**: Downgrading below heuristic severity is permitted exclusively when `isResponder: true` with a verified responder node key. The packet is stamped with `triageMethod: MANUAL_OVERRIDE` and tagged with `[RESPONDER_OVERRIDE:<id>]`.
+
+---
+
+## 📬 Delay-Tolerant Networking & Anti-Entropy
+
+Mesh clusters frequently split and reconnect across physical dead zones. Instead of blind channel flooding, nodes exchange mathematical delta summaries.
+
+### 1. Originator-Monotonic Sequence Vectors with Ack-Floors
+Probabilistic Bloom filters suffer from false-positive packet suppression (dropping life-critical SOS records) and cannot delete items without "zombie" re-propagation. Mesh·OS implements deterministic originator vectors:
+- **Vector Layout**: Each entry packs `originatorId` (16-byte UUID), `ackFloor` (uint64), and `activeBitmask` (uint64).
+- **Sub-512B Frame**: A 10-node cluster summary packs into **326 bytes**, fitting entirely within the first negotiated BLE ATT MTU window without GATT fragmentation.
+- **Ack-Floor Invariant**: Any packet sequence $\le \text{ackFloor}$ is recognized across all network nodes as permanently delivered and purged.
+
+### 2. Priority-Ordered Queue & 50 KB Airtime Budget
+- Over BLE 1M PHY at -80 dBm, connection parameters yield an effective GATT throughput of ~12 KB/s. In a 5-second physical contact window, usable airtime is ~4.2 seconds.
+- `TransmissionQueue.ts` caps batches to **$\le 50$ KB or 60 records max**, strictly prioritizing:
+  1. Priority tier (`CRITICAL` > `HIGH` > `LOW`).
+  2. Staleness / Generation timestamp (newest emergency telemetry first).
+  3. Spray-and-Wait allowance (`copiesLeft`).
+
+### 3. Dual-Role Bridge Invariant & Atomic Copy Halving
+When a mobile node bridges two peers simultaneously (Central to Node A and Peripheral to Node B), queue access is guarded by an `AsyncMutex`. Spray-and-Wait copies are split using atomic Compare-And-Swap (CAS) halving:
+$$\text{copiesToSend} = \lfloor \text{copiesLeft} / 2 \rfloor, \quad \text{copiesRemaining} = \text{copiesLeft} - \text{copiesToSend}$$
+Guarantees that total network copies are conserved and never duplicated out of thin air.
+
+### 4. Bounded Storage Manager & Eviction Cascade
+Guarantees Mesh·OS never exceeds an operator-defined hard ceiling (**50 MB**):
+- **Tier 1 Eviction**: Drop `RESOLVED` incidents older than 6 hours.
+- **Tier 2 Eviction**: Drop expired `LOW` priority payloads whose TTL $\le 1$.
+- **Tier 3 Eviction**: Halve or drop replicated `HIGH` priority payloads with `copiesLeft > 1`.
+- **Tier 4 (Strict Non-Eviction Invariant)**: **Un-replicated `CRITICAL` triage records originating from the local device are mathematically immune to eviction.**
+
+---
+
+## 🔬 Hardware Verification & Field-Testing
+
+### Link-Layer RF & Power Telemetry ([`BleTelemetry.ts`](./src/diagnostics/BleTelemetry.ts))
+- **Exponential Moving Average (EMA) RSSI**: $\overline{\text{RSSI}}_t = 0.2 \cdot \text{RSSI}_t + 0.8 \cdot \overline{\text{RSSI}}_{t-1}$ to filter multipath fading.
+- **GATT RTT & PER Tracking**: Continuously monitors Packet Error Rate and estimated airtime utilization.
+- **24-Hour Blackout Survival Projection**: Calculates real-time scan/connection duty cycles and warns when battery discharge velocity threatens survival.
+
+### Anti-Collision Scheduler ([`BleScheduler.ts`](./src/diagnostics/BleScheduler.ts))
+- Prevents Android Bluetooth Stack Status 133 exhaustion via a single-flight serialized connection queue.
+- Tiered scan duty cycles:
+  - *Normal*: 1.5s scan every 10s with $\pm 20\%$ randomized jitter (~15% duty cycle).
+  - *Idle*: 1.5s scan every 30s with $\pm 20\%$ jitter (~5% duty cycle) after 5 minutes quiet.
+  - *Surge*: 2.0s scan every 5s with $\pm 15\%$ jitter (~40% duty cycle) when un-replicated `CRITICAL` packets are queued.
 
 ---
 
 ## 📁 Repository Structure
 
 ```text
-├── drop-node-server.js          # Standalone WebSocket physical relay server
-├── public/                      # Static assets & PWA manifest icons
+├── docs/
+│   └── FIELD_TESTING_RUNBOOK.md    # Multi-device physical field verification protocol
+├── scripts/
+│   ├── run-triage-tests.mjs         # Deterministic START/SALT test runner
+│   ├── run-dtn-simulation.mjs       # DTN store-and-forward muling simulation
+│   ├── run-ble-stress-tests.mjs     # 32-permutation asymmetric MTU stress harness
+│   └── test-ble-fragmentation.mjs   # BLE ATT MTU slicing & chunk reassembly test
 ├── src/
-│   ├── ai/                      # On-device AI inference
-│   │   ├── ai.worker.ts         # Dedicated Web Worker for non-blocking triage
-│   │   └── WebLLMService.ts     # WebLLM wrapper & model weight manager
-│   ├── components/              # UI & Visualization components
-│   │   ├── network/             # React Flow mesh graph & custom nodes
-│   │   └── ui/                  # Telemetry panel, controls, error alerts
-│   ├── hooks/                   # Custom React hooks (useMeshVisualizer)
-│   ├── network/                 # Core networking & transport
-│   │   ├── Crypto.ts            # Web Crypto AES-GCM & SHA-256 utilities
-│   │   ├── MeshNode.ts          # WebRTC P2P node engine & routing logic
-│   │   └── serialization/       # Protocol Buffers schema & binary serializer
-│   ├── store/                   # Zustand state stores (AI, messages, errors)
-│   ├── App.tsx                  # Main application orchestrator
-│   └── main.tsx                 # Entrypoint with PWA registration
-├── vercel.json                  # Edge proxy rewrites & COOP/COEP headers
-└── vite.config.ts               # Vite configuration & PWA worker settings
+│   ├── components/
+│   │   ├── network/MeshGraph.tsx    # Interactive React Flow mesh topology canvas
+│   │   └── ui/
+│   │       ├── TacticalTriageHUD.tsx # High-contrast structured input HUD
+│   │       ├── TelemetryPanel.tsx   # Link metrics, audit trails, and role controls
+│   │       ├── AlertBanner.tsx      # High-priority tactical alert banner
+│   │       └── QuickMacros.tsx      # Instant emergency macro chips
+│   ├── diagnostics/
+│   │   ├── BleScheduler.ts          # Collision avoidance, jitter & status 133 queue
+│   │   └── BleTelemetry.ts          # Link-layer RF metrics, PER & power telemetry
+│   ├── dtn/
+│   │   ├── AntiEntropy.ts           # State vectors, ack-floors & sub-512B frame sync
+│   │   └── TransmissionQueue.ts     # Priority queue, 50KB airtime limiter & copy halving
+│   ├── network/
+│   │   ├── BleTransport.ts          # Native BLE transport & ATT MTU chunk slicing
+│   │   ├── Serializer.ts            # Protobuf encoders/decoders & UUID compacting
+│   │   └── types.ts                 # Network interfaces & packet definitions
+│   ├── proto/
+│   │   ├── schema.proto             # Canonical Protobuf schema specification
+│   │   └── schema.ts                # Isomorphic schema export for Node/Vite runtimes
+│   ├── storage/
+│   │   ├── StorageManager.ts        # 50 MB hard quota & 4-tier eviction cascade
+│   │   └── WAL.ts                   # IndexedDB Write-Ahead Log & lazy migration
+│   ├── store/
+│   │   ├── useTriageStore.ts        # Synchronous triage state store
+│   │   ├── useMessageStore.ts       # Message feed & incident filter store
+│   │   └── useMeshStore.ts          # Mesh topology, keys, and role store
+│   ├── test/
+│   │   ├── DeterministicTriage.spec.ts # START/SALT, typo & multilingual tests
+│   │   ├── DtnSimulation.spec.ts    # End-to-end data mule simulation test
+│   │   └── BleStressHarness.ts      # Chaos injection & dropped fragment test
+│   ├── triage/
+│   │   ├── DeterministicTriage.ts   # Core zero-allocation triage engine
+│   │   └── lexicons/                # Static emergency dictionaries (EN, ES, HI)
+│   ├── App.tsx                      # Dashboard layout & event orchestrator
+│   ├── main.tsx                     # React root & lifecycle registration
+│   └── sw.ts                        # Zero-network PWA Service Worker (711 KB precache)
+├── capacitor.config.ts              # Capacitor native bridge configuration
+├── package.json                     # Cleaned dependencies (zero neural weights)
+└── vite.config.ts                   # Vite PWA & Rollup bundle configuration
 ```
 
 ---
@@ -129,11 +227,11 @@ flowchart TD
 ## 🚀 Getting Started
 
 ### Prerequisites
-* **Node.js**: v18.0.0 or higher
-* **npm**: v9.0.0 or higher
-* Modern browser with WebRTC support (Chrome, Firefox, Safari, Edge). *WebGPU is recommended for hardware-accelerated local LLM inference.*
+* **Node.js**: `v20.0.0` or higher
+* **npm**: `v9.0.0` or higher
+* Modern browser with Bluetooth Web API or Capacitor native runtime on Android/iOS.
 
-### Installation
+### Local Development Setup
 
 1. **Clone the repository**:
    ```bash
@@ -150,59 +248,40 @@ flowchart TD
    ```bash
    npm run dev
    ```
-   Open `http://localhost:5173` in your browser. Open multiple tabs or different devices on the same network to observe peer discovery in real time.
-
-4. **Build for production**:
-   ```bash
-   npm run build
-   ```
+   Open **[https://localhost:5173/](https://localhost:5173/)** in your browser. (Accept the local development self-signed SSL certificate to allow Web Crypto and Wake Lock APIs).
 
 ---
 
-## 🛰️ Hardware & Drop-Node Relay
+## 🧪 Verification & Test Commands
 
-For disaster response teams deploying physical field relays (e.g. Raspberry Pi running on solar power or a vehicle-mounted hotspot):
+Mesh·OS includes an automated suite of deterministic test harnesses:
 
 ```bash
-# Run the standalone headless drop node server
-node drop-node-server.js
-```
-The server will initialize a high-throughput WebSocket repeater on port `8080` (or specified `PORT`), acting as a permanent store-and-forward mesh bridge.
+# 1. Run START/SALT Deterministic Triage Protocol Suite (Speed, Typos, Multilingual, Escalation)
+npx tsx scripts/run-triage-tests.mjs
 
----
+# 2. Run Multi-Hop DTN Store-and-Forward Muling & Anti-Entropy Simulation
+npx tsx scripts/run-dtn-simulation.mjs
 
-## 🔒 Security & Deployment Headers
+# 3. Run Asymmetric BLE MTU & Chaos Injection Stress Harness (32 Permutations)
+npx tsx scripts/run-ble-stress-tests.mjs
 
-Mesh·OS utilizes `SharedArrayBuffer` for multi-threaded WebAssembly performance. Production deployments must serve proper Cross-Origin Isolation headers:
+# 4. Run ATT MTU Slicing & Reassembly Fragmentation Verification
+npx tsx scripts/test-ble-fragmentation.mjs
 
-```json
-{
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" },
-        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" }
-      ]
-    }
-  ]
-}
+# 5. Run Static Analysis & Linter
+npm run lint
+
+# 6. Run Production Build (TypeScript Typecheck & Vite PWA Bundle)
+npm run build
 ```
 
 ---
 
-## 🤝 Contributing
+## 📄 License
 
-Contributions are welcome! Please feel free to submit issues and pull requests:
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'feat: Add AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
----
+Distributed under the **MIT License**. See [`LICENSE`](./LICENSE) for more information.
 
 <div align="center">
-  <sub>Built for resilience. Zero infrastructure, zero single points of failure.</sub>
+  <sub>Built for human resilience. Zero infrastructure, zero single points of failure.</sub>
 </div>
