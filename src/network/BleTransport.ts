@@ -1,11 +1,14 @@
 import { Capacitor } from '@capacitor/core';
-import { BleClient, type BleDevice } from '@capacitor-community/bluetooth-le';
+import { BleClient } from '@capacitor-community/bluetooth-le';
 import type { ITransport } from './ITransport';
+import { BleScheduler } from './BleScheduler';
+import { BleTelemetry } from '../diagnostics/BleTelemetry';
 
 // ─── BLE Configuration Constants ─────────────────────────────────────────────
 
 export const MESH_SERVICE_UUID = 'e0c00001-mesh-os00-0000-000000000000';
 export const MESH_CHARACTERISTIC_UUID = 'e0c00002-mesh-os00-0000-000000000000';
+export const APPLE_COMPANY_ID = 0x004c; // Apple Inc. 16-bit Manufacturer Identifier
 
 export const DEFAULT_ATT_MTU = 23;
 export const REQUESTED_ATT_MTU = 512;
@@ -13,11 +16,8 @@ export const ATT_HEADER_OVERHEAD = 3;
 export const CHUNK_HEADER_SIZE = 2; // [TotalChunks, ChunkIndex]
 export const TOTAL_HEADER_OVERHEAD = ATT_HEADER_OVERHEAD + CHUNK_HEADER_SIZE; // 5 bytes
 
-export const SCAN_WINDOW_MS = 1_200;       // 1.2s active scan window
-export const BASE_QUIET_WINDOW_MS = 3_800; // 3.8s base quiet window (~24% duty cycle)
-export const MAX_QUIET_WINDOW_MS = 15_000; // Max backoff quiet interval when idle
 export const REASSEMBLY_TIMEOUT_MS = 3_000; // 3-second fragment reassembly timeout
-export const SESSION_TIMEOUT_MS = 5_000;   // 5-second ephemeral connect-and-harvest window
+export const SESSION_HARVEST_WAIT_MS = 1_500; // Ephemeral harvest observation window
 
 // ─── Fragmentation Types ─────────────────────────────────────────────────────
 
@@ -158,9 +158,12 @@ export class FragmentationManager {
 export class BleTransport implements ITransport {
   private isStarted = false;
   private isScanning = false;
-  private isConnecting = false;
   private receiveCallbacks: Set<(rawBytes: Uint8Array) => void> = new Set();
   private fragmentationManager = new FragmentationManager();
+
+  // Diagnostics & Collision Avoidance Scheduler
+  public readonly scheduler = new BleScheduler();
+  public readonly telemetry = BleTelemetry.getInstance();
 
   // Outgoing queue for frames to be flushed during ephemeral peer connections
   private outgoingQueue: Uint8Array[] = [];
@@ -169,13 +172,64 @@ export class BleTransport implements ITransport {
   // Active MTUs per connected device (defaulting to 23)
   private deviceMtus = new Map<string, number>();
 
-  // Duty cycling timer handles
-  private dutyCycleTimer: ReturnType<typeof setTimeout> | null = null;
-  private currentQuietWindowMs = BASE_QUIET_WINDOW_MS;
+  // Currently connected device ID
+  private currentConnectedDeviceId: string | null = null;
 
-  // Peer rotation and active connection tracker
-  private knownPeers = new Set<string>();
-  private activeConnections = new Set<string>();
+  constructor() {
+    this.setupSchedulerHooks();
+  }
+
+  private setupSchedulerHooks(): void {
+    this.scheduler.onStartScan = async () => {
+      if (!this.isStarted || !Capacitor.isNativePlatform() || this.isScanning) return;
+      try {
+        this.isScanning = true;
+        this.telemetry.recordScanStart();
+
+        // Android scans for both standard service UUID and Apple manufacturer overflow packets
+        await BleClient.requestLEScan(
+          {
+            services: [MESH_SERVICE_UUID],
+            allowDuplicates: false,
+          },
+          (result) => {
+            if (result.device?.deviceId) {
+              if (result.rssi !== undefined) {
+                this.telemetry.recordPeerRssi(result.device.deviceId, result.rssi);
+              }
+              this.scheduler.enqueueDiscoveredPeer(result.device.deviceId);
+            }
+          }
+        );
+      } catch (err) {
+        console.warn('[BleTransport] LE scan start warning:', err);
+        this.isScanning = false;
+        this.telemetry.recordScanStop();
+      }
+    };
+
+    this.scheduler.onStopScan = async () => {
+      if (this.isScanning) {
+        try {
+          await BleClient.stopLEScan();
+        } catch {}
+        this.isScanning = false;
+        this.telemetry.recordScanStop();
+      }
+    };
+
+    this.scheduler.onExecuteSession = async (peerId: string) => {
+      await this.executeEphemeralSession(peerId);
+    };
+
+    this.scheduler.onForceDisconnect = async (peerId: string) => {
+      try {
+        await BleClient.disconnect(peerId);
+      } catch {}
+      this.currentConnectedDeviceId = null;
+      this.telemetry.recordConnectionStop(peerId);
+    };
+  }
 
   public async start(): Promise<void> {
     if (this.isStarted) return;
@@ -189,7 +243,7 @@ export class BleTransport implements ITransport {
     try {
       await BleClient.initialize();
       console.log('[BleTransport] BleClient initialized successfully.');
-      this.scheduleNextDutyCycle();
+      this.scheduler.start();
     } catch (err) {
       console.error('[BleTransport] Failed to initialize native BLE client:', err);
     }
@@ -197,26 +251,24 @@ export class BleTransport implements ITransport {
 
   public async stop(): Promise<void> {
     this.isStarted = false;
-
-    if (this.dutyCycleTimer) {
-      clearTimeout(this.dutyCycleTimer);
-      this.dutyCycleTimer = null;
-    }
+    this.scheduler.stop();
 
     if (this.isScanning) {
       try {
         await BleClient.stopLEScan();
       } catch {}
       this.isScanning = false;
+      this.telemetry.recordScanStop();
     }
 
-    // Disconnect any active connections
-    for (const deviceId of this.activeConnections) {
+    if (this.currentConnectedDeviceId) {
       try {
-        await BleClient.disconnect(deviceId);
+        await BleClient.disconnect(this.currentConnectedDeviceId);
       } catch {}
+      this.telemetry.recordConnectionStop(this.currentConnectedDeviceId);
+      this.currentConnectedDeviceId = null;
     }
-    this.activeConnections.clear();
+
     this.deviceMtus.clear();
     this.fragmentationManager.clear();
     this.receiveCallbacks.clear();
@@ -235,102 +287,31 @@ export class BleTransport implements ITransport {
     }
     this.outgoingQueue.push(rawBytes);
 
-    // Reset quiet interval backoff on new outgoing emergency traffic
-    this.currentQuietWindowMs = BASE_QUIET_WINDOW_MS;
+    this.scheduler.recordActivity();
 
-    // If already connected to active peers, flush immediately
-    for (const deviceId of this.activeConnections) {
-      this.flushQueueToDevice(deviceId).catch((err) => {
-        console.warn(`[BleTransport] Failed to flush to active device ${deviceId}:`, err);
+    // If already in an active session, attempt immediate flush
+    if (this.currentConnectedDeviceId) {
+      this.flushQueueToDevice(this.currentConnectedDeviceId).catch((err) => {
+        console.warn(`[BleTransport] Failed to flush to active device ${this.currentConnectedDeviceId}:`, err);
       });
-    }
-  }
-
-  // ─── Asynchronous Time-Sliced Duty Cycling ─────────────────────────────────
-
-  private scheduleNextDutyCycle(): void {
-    if (!this.isStarted || !Capacitor.isNativePlatform()) return;
-
-    // Phase 1: Active Scan Window (1.2s)
-    this.dutyCycleTimer = setTimeout(async () => {
-      await this.runScanWindow();
-
-      // Phase 2: Quiet / Advertise-Only Window (3.8s -> 15s with backoff)
-      if (this.isStarted) {
-        this.dutyCycleTimer = setTimeout(() => {
-          this.scheduleNextDutyCycle();
-        }, this.currentQuietWindowMs);
-      }
-    }, 100);
-  }
-
-  private async runScanWindow(): Promise<void> {
-    if (this.isConnecting || this.activeConnections.size > 0) {
-      // Suspend scanning during active GATT transfer to prevent 2.4 GHz contention
-      return;
-    }
-
-    let foundNewPeer = false;
-
-    try {
-      this.isScanning = true;
-      await BleClient.requestLEScan(
-        {
-          services: [MESH_SERVICE_UUID],
-          allowDuplicates: false,
-        },
-        (result) => {
-          if (result.device?.deviceId) {
-            foundNewPeer = true;
-            this.handleDiscoveredPeer(result.device);
-          }
-        }
-      );
-
-      // Keep scanner alive for SCAN_WINDOW_MS
-      await new Promise((resolve) => setTimeout(resolve, SCAN_WINDOW_MS));
-    } catch (err) {
-      console.warn('[BleTransport] LE scan warning:', err);
-    } finally {
-      if (this.isScanning) {
-        try {
-          await BleClient.stopLEScan();
-        } catch {}
-        this.isScanning = false;
-      }
-
-      // Adaptive backoff: increment quiet window if no peers found, reset if peers active
-      if (foundNewPeer) {
-        this.currentQuietWindowMs = BASE_QUIET_WINDOW_MS;
-      } else {
-        this.currentQuietWindowMs = Math.min(this.currentQuietWindowMs * 1.5, MAX_QUIET_WINDOW_MS);
-      }
     }
   }
 
   // ─── Ephemeral Connect-and-Harvest Session ──────────────────────────────────
 
-  private async handleDiscoveredPeer(device: BleDevice): Promise<void> {
-    const deviceId = device.deviceId;
-    if (this.activeConnections.has(deviceId) || this.isConnecting) return;
-
-    this.isConnecting = true;
-    this.knownPeers.add(deviceId);
+  private async executeEphemeralSession(deviceId: string): Promise<void> {
+    this.currentConnectedDeviceId = deviceId;
+    this.telemetry.recordConnectionStart(deviceId);
 
     try {
-      // Suspend scan immediately for radio focus
-      if (this.isScanning) {
-        try { await BleClient.stopLEScan(); } catch {}
-        this.isScanning = false;
-      }
-
-      console.log(`[BleTransport] Establishing ephemeral session with peer: ${deviceId}`);
+      console.log(`[BleTransport] Establishing single-flight session with peer: ${deviceId}`);
       await BleClient.connect(deviceId, (disconnectedId) => {
-        this.activeConnections.delete(disconnectedId);
-        this.deviceMtus.delete(disconnectedId);
-        console.log(`[BleTransport] Peer disconnected: ${disconnectedId}`);
+        if (this.currentConnectedDeviceId === disconnectedId) {
+          this.currentConnectedDeviceId = null;
+          this.telemetry.recordConnectionStop(disconnectedId);
+          console.log(`[BleTransport] Peer disconnected: ${disconnectedId}`);
+        }
       });
-      this.activeConnections.add(deviceId);
 
       // Query negotiated MTU (Android automatically requests 512, iOS auto-negotiates)
       let effectiveMtu = DEFAULT_ATT_MTU;
@@ -338,7 +319,6 @@ export class BleTransport implements ITransport {
         effectiveMtu = await BleClient.getMtu(deviceId);
         console.log(`[BleTransport] Negotiated ATT MTU: ${effectiveMtu} with peer ${deviceId}`);
       } catch {
-        // Fallback to conservative 23 if getMtu fails or unsupported
         console.log(`[BleTransport] MTU query unsupported, defaulting to ${DEFAULT_ATT_MTU}`);
       }
       this.deviceMtus.set(deviceId, effectiveMtu);
@@ -351,8 +331,11 @@ export class BleTransport implements ITransport {
           MESH_CHARACTERISTIC_UUID,
           (value: DataView) => {
             const rawChunk = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+            this.telemetry.recordChunkReceived(deviceId, rawChunk.length);
+
             const completeFrame = this.fragmentationManager.ingestFragment(deviceId, rawChunk);
             if (completeFrame) {
+              this.telemetry.recordFrameCompleted(deviceId);
               this.emitReceive(completeFrame);
             }
           }
@@ -364,18 +347,16 @@ export class BleTransport implements ITransport {
       // Flush queued envelopes to peer
       await this.flushQueueToDevice(deviceId);
 
-      // Keep session open for SESSION_TIMEOUT_MS to harvest response notifications
-      await new Promise((resolve) => setTimeout(resolve, SESSION_TIMEOUT_MS));
-    } catch (err) {
-      console.warn(`[BleTransport] Ephemeral session error with ${deviceId}:`, err);
+      // Keep session open briefly to harvest incoming response notifications
+      await new Promise((resolve) => setTimeout(resolve, SESSION_HARVEST_WAIT_MS));
     } finally {
-      // Disconnect cleanly to free hardware connection slot
+      // Teardown GATT connection to free native stack handle
       try {
         await BleClient.disconnect(deviceId);
       } catch {}
-      this.activeConnections.delete(deviceId);
+      this.telemetry.recordConnectionStop(deviceId);
+      this.currentConnectedDeviceId = null;
       this.deviceMtus.delete(deviceId);
-      this.isConnecting = false;
     }
   }
 
@@ -386,17 +367,22 @@ export class BleTransport implements ITransport {
       const fragments = slicePayload(frame, mtu);
 
       for (const fragment of fragments) {
+        const start = Date.now();
         try {
           const dataView = new DataView(fragment.buffer, fragment.byteOffset, fragment.byteLength);
-          // Use write with response to ensure link-layer pacing and prevent controller buffer overflow
+          // Use write with response to enforce link-layer flow control and prevent Fluoride buffer overflow
           await BleClient.write(
             deviceId,
             MESH_SERVICE_UUID,
             MESH_CHARACTERISTIC_UUID,
             dataView
           );
+          const rtt = Date.now() - start;
+          this.telemetry.recordChunkTransmission(deviceId, fragment.length, true, rtt);
         } catch (err) {
           console.warn(`[BleTransport] Write fragment failed on ${deviceId}:`, err);
+          this.telemetry.recordChunkTransmission(deviceId, fragment.length, false);
+          this.scheduler.recordGattError(deviceId);
           return;
         }
       }
