@@ -10,6 +10,9 @@
     "preview": "vite preview --host"
   },
   "dependencies": {
+    "@capacitor-community/bluetooth-le": "^8.3.0",
+    "@capacitor/cli": "^8.5.1",
+    "@capacitor/core": "^8.5.1",
     "@mlc-ai/web-llm": "^0.2.84",
     "@xyflow/react": "^12.11.3",
     "d3-force": "^3.0.0",

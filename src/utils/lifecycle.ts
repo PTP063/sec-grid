@@ -7,6 +7,8 @@
  * 3. Background Audio Keep-Alive with MediaSession metadata to defeat iOS/Android background freeze
  */
 
+import { Capacitor } from '@capacitor/core';
+
 // ─── 1. Storage Durability ──────────────────────────────────────────────────
 
 export interface PersistenceStatus {
@@ -270,4 +272,18 @@ export function initAudioKeepAlive(): () => void {
     }
     isAudioKeepAliveInitialized = false;
   };
+}
+
+// ─── 4. Native Mobile Runtime Hooks ──────────────────────────────────────────
+
+/**
+ * Coordinates native screen wake locks, persistent media sessions, and background
+ * execution loops specifically for Capacitor Android/iOS deployment.
+ */
+export async function initNativeKeepAliveSubsystem(): Promise<void> {
+  if (Capacitor.isNativePlatform()) {
+    console.log('[Lifecycle] Native mobile runtime detected: initializing background resilience.');
+    await acquireWakeLock();
+    initAudioKeepAlive();
+  }
 }

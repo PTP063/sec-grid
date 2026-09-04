@@ -1,15 +1,17 @@
 import { create } from 'zustand';
-import { Priority, type TriageSOSData } from '../network/serialization/Serializer';
+import { Capacitor } from '@capacitor/core';
+import type { TriageSOSData } from '../network/serialization/Serializer';
 import type { WorkerMessageIn, WorkerMessageOut } from '../ai/ai.worker';
 
 interface AIState {
   isLoaded: boolean;
   isMockMode: boolean;
+  isHeuristicLocked: boolean;
   loadingProgress: number;
   loadingText: string;
   error: string | null;
   isLoading: boolean;
-  
+
   loadModel: () => Promise<void>;
   processMessage: (text: string) => Promise<TriageSOSData | null>;
 }
@@ -21,7 +23,8 @@ const aiWorker = new Worker(new URL('../ai/ai.worker.ts', import.meta.url), { ty
 const pendingInferences = new Map<string, (result: TriageSOSData | null) => void>();
 
 export const useAIStore = create<AIState>((set, get) => {
-  
+  const isNative = Capacitor.isNativePlatform();
+
   // Set up worker message listener
   aiWorker.onmessage = (e: MessageEvent<WorkerMessageOut>) => {
     const data = e.data;
@@ -29,26 +32,30 @@ export const useAIStore = create<AIState>((set, get) => {
       case 'PROGRESS':
         set({ loadingProgress: data.payload.progress, loadingText: data.payload.text });
         break;
-      case 'INIT_DONE':
-        set({ isLoaded: true, isLoading: false, loadingProgress: 100, loadingText: 'Model loaded and ready.' });
+      case 'INIT_DONE': {
+        const isHeuristic = data.payload?.mode === 'HEURISTIC' || isNative;
+        set({
+          isLoaded: true,
+          isLoading: false,
+          isHeuristicLocked: isHeuristic,
+          loadingProgress: 100,
+          loadingText: isHeuristic ? 'Battery-Saver Heuristic Active' : 'Model loaded and ready.',
+        });
         break;
-      case 'INIT_ERROR':
-        const message = data.payload.toLowerCase();
-        if (message.includes('failed to fetch')) {
-          console.warn('[useAIStore] Network blocked. Falling back to Mock AI Mode.');
-          set({
-            isMockMode: true,
-            isLoaded: true,
-            isLoading: false,
-            error: null,
-            loadingProgress: 100,
-            loadingText: 'Offline Mock Mode',
-          });
-        } else {
-          set({ error: data.payload, loadingProgress: 0, loadingText: '', isLoading: false });
-        }
+      }
+      case 'INIT_ERROR': {
+        console.warn('[useAIStore] WebGPU error, falling back to Tier 1 Heuristic:', data.payload);
+        set({
+          isLoaded: true,
+          isLoading: false,
+          isHeuristicLocked: true,
+          error: null,
+          loadingProgress: 100,
+          loadingText: 'Battery-Saver Heuristic Active',
+        });
         break;
-      case 'INFER_RESULT':
+      }
+      case 'INFER_RESULT': {
         const { id, result } = data.payload;
         const resolve = pendingInferences.get(id);
         if (resolve) {
@@ -56,12 +63,14 @@ export const useAIStore = create<AIState>((set, get) => {
           pendingInferences.delete(id);
         }
         break;
+      }
     }
   };
 
   return {
     isLoaded: false,
     isMockMode: false,
+    isHeuristicLocked: isNative,
     loadingProgress: 0,
     loadingText: '',
     error: null,
@@ -69,6 +78,18 @@ export const useAIStore = create<AIState>((set, get) => {
 
     loadModel: async () => {
       if (get().isLoaded || get().isLoading) return;
+
+      // On native platforms, lock to zero-latency regex heuristic immediately
+      if (isNative) {
+        set({
+          isLoading: true,
+          error: null,
+          loadingProgress: 50,
+          loadingText: 'Locking Tier 1 Heuristic...',
+        });
+        aiWorker.postMessage({ type: 'INIT', payload: { lockHeuristic: true } } satisfies WorkerMessageIn);
+        return;
+      }
 
       set({
         isLoading: true,
@@ -81,25 +102,8 @@ export const useAIStore = create<AIState>((set, get) => {
     },
 
     processMessage: async (text) => {
-      const { isLoaded, isMockMode } = get();
+      const { isLoaded } = get();
       if (!isLoaded || !text.trim()) return null;
-
-      if (isMockMode) {
-        await new Promise((resolve) => setTimeout(resolve, 800 + Math.random() * 1200));
-        let priority: Priority = Priority.LOW;
-        const lower = text.toLowerCase();
-        if (lower.includes('heart') || lower.includes('bleed') || lower.includes('crit')) priority = Priority.CRITICAL;
-        else if (lower.includes('broken') || lower.includes('burn')) priority = Priority.HIGH;
-
-        return {
-          id: crypto.randomUUID(),
-          sender: 'mock-ai',
-          priority: priority,
-          medicalNeed: text.slice(0, 50) + (text.length > 50 ? '...' : ''),
-          hazard: lower.includes('fire') ? 'Fire' : 'None',
-          timestamp: Date.now(),
-        };
-      }
 
       return new Promise<TriageSOSData | null>((resolve) => {
         const id = crypto.randomUUID();

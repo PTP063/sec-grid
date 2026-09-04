@@ -7,7 +7,12 @@ import type {
 } from './types';
 import { DeduplicationCache } from './DeduplicationCache';
 import { sealPayload, unsealPayload } from '../security/Crypto';
-import { relayWirePacket, unpackWirePacket } from './Envelope';
+import { createWirePacket, relayWirePacket, unpackWirePacket } from './Envelope';
+import type { ITransport } from './ITransport';
+import { BleTransport } from './BleTransport';
+import { BroadcastChannelTransport } from './BroadcastChannelTransport';
+import { acquireWakeLock, initAudioKeepAlive } from '../utils/lifecycle';
+import { Capacitor } from '@capacitor/core';
 
 import Peer, { type DataConnection } from 'peerjs';
 
@@ -21,20 +26,21 @@ const PEER_TIMEOUT_MS = 25_000; // Tolerates up to 10s heartbeats + jitter
 // ─── MeshNode ────────────────────────────────────────────────────────────────
 
 /**
- * Event-driven P2P transport node backed by WebRTC (PeerJS) and `BroadcastChannel`.
+ * Event-driven P2P transport node backed by Native BLE (on mobile),
+ * BroadcastChannel (in browsers), and fallback WebRTC (PeerJS).
  *
  * Responsibilities:
- * - Generates a stable UUID for this browser tab on construction.
- * - Broadcasts heartbeats at a fixed interval so peers can discover it.
- * - Prunes peers that have gone silent beyond `PEER_TIMEOUT_MS`.
- * - Routes incoming DATA packets to registered listeners.
- * - Relays targeted packets with TTL decrement (multi-hop mesh support).
- * - Deduplicates packets via a bounded TTL cache.
- *
- * Lifecycle: call `destroy()` on unmount to cleanly release all resources.
+ * - Automatically initializes Native BleTransport when running in Capacitor,
+ *   or BroadcastChannelTransport when running in desktop browsers.
+ * - Broadcasts heartbeats so peers discover it.
+ * - Prunes silent peers beyond PEER_TIMEOUT_MS.
+ * - Relays multi-hop packets via zero-knowledge relay slicing.
+ * - Wire-level deduplication via bounded cache.
+ * - Enforces screen-off background persistence via wake locks and audio keep-alive.
  */
 export class MeshNode {
   public readonly id: string;
+  public readonly transport: ITransport;
 
   private readonly channel: BroadcastChannel;
   private readonly cache: DeduplicationCache;
@@ -62,7 +68,8 @@ export class MeshNode {
   constructor(
     channelName = 'mesh-network',
     signalingServer?: { host: string; port: number; path: string },
-    encryptionKey = 'TACTICAL_MESH_KEY_01'
+    encryptionKey = 'TACTICAL_MESH_KEY_01',
+    customTransport?: ITransport
   ) {
     this.encryptionKey = encryptionKey;
     this.signalingServer = signalingServer;
@@ -76,10 +83,39 @@ export class MeshNode {
     this.nodeListListeners = new Set();
     this.peerjsIdListeners = new Set();
 
+    // 1. Injected or Dynamic Transport Selection
+    if (customTransport) {
+      this.transport = customTransport;
+    } else if (Capacitor.isNativePlatform()) {
+      console.log('[MeshNode] Native platform detected: activating native BleTransport.');
+      this.transport = new BleTransport();
+    } else {
+      console.log('[MeshNode] Desktop/Browser detected: activating BroadcastChannelTransport.');
+      this.transport = new BroadcastChannelTransport(channelName);
+    }
+
+    // Subscribe to wire frames from the active transport
+    this.transport.onReceive((rawBytes) => {
+      this.handleIncomingWireBytes(rawBytes);
+    });
+
+    // Start transport loop
+    this.transport.start().catch((err) => {
+      console.warn('[MeshNode] Transport failed to start:', err);
+    });
+
+    // Wire native screen-off keep-alive hooks
+    if (Capacitor.isNativePlatform()) {
+      acquireWakeLock().catch(() => {});
+      initAudioKeepAlive();
+    }
+
     this.channel.onmessage = this.handleIncoming.bind(this);
 
-    // Initialize WebRTC
-    this.initWebRTC();
+    // Initialize WebRTC only if in browser environment or if signalingServer is explicitly supplied
+    if (!Capacitor.isNativePlatform() || this.signalingServer) {
+      this.initWebRTC();
+    }
 
     // Send an immediate heartbeat so sibling tabs see us right away
     this.broadcast(null, 'HEARTBEAT');
@@ -107,33 +143,37 @@ export class MeshNode {
   }
 
   private initWebRTC() {
-    if (this.signalingServer) {
-      console.log(`[MeshNode] Connecting to local signaling bridge at ${this.signalingServer.host}:${this.signalingServer.port}`);
-      this.peerjs = new Peer({
-        host: this.signalingServer.host,
-        port: this.signalingServer.port,
-        path: this.signalingServer.path,
-        secure: this.signalingServer.port === 443
-      });
-    } else {
-      this.peerjs = new Peer();
-    }
-    
-    this.peerjs.on('open', (id) => {
-      this.peerjsId = id;
-      console.log('[MeshNode] WebRTC Online. ID:', id);
-      for (const listener of this.peerjsIdListeners) {
-        try { listener(id); } catch (err) { console.error('[MeshNode] PeerJsId listener threw:', err); }
+    try {
+      if (this.signalingServer) {
+        console.log(`[MeshNode] Connecting to local signaling bridge at ${this.signalingServer.host}:${this.signalingServer.port}`);
+        this.peerjs = new Peer({
+          host: this.signalingServer.host,
+          port: this.signalingServer.port,
+          path: this.signalingServer.path,
+          secure: this.signalingServer.port === 443,
+        });
+      } else {
+        this.peerjs = new Peer();
       }
-    });
 
-    this.peerjs.on('connection', (conn) => {
-      this.setupWebRTCConnection(conn);
-    });
-    
-    this.peerjs.on('error', (err) => {
-      console.warn('[MeshNode] WebRTC error:', err);
-    });
+      this.peerjs.on('open', (id) => {
+        this.peerjsId = id;
+        console.log('[MeshNode] WebRTC Online. ID:', id);
+        for (const listener of this.peerjsIdListeners) {
+          try { listener(id); } catch (err) { console.error('[MeshNode] PeerJsId listener threw:', err); }
+        }
+      });
+
+      this.peerjs.on('connection', (conn) => {
+        this.setupWebRTCConnection(conn);
+      });
+
+      this.peerjs.on('error', (err) => {
+        console.warn('[MeshNode] WebRTC error:', err);
+      });
+    } catch (e) {
+      console.warn('[MeshNode] WebRTC initialization skipped:', e);
+    }
   }
 
   public onPeerJsId(listener: (id: string) => void): () => void {
@@ -153,17 +193,21 @@ export class MeshNode {
       console.log('[MeshNode] WebRTC Connected to:', conn.peer);
       this.webrtcConnections.set(conn.peer, conn);
     });
-    
+
     conn.on('data', (data) => {
-      // Create a mock MessageEvent to reuse the BroadcastChannel packet handler
-      const event = { data } as MessageEvent;
-      this.handleIncoming(event);
+      if (data instanceof Uint8Array || data instanceof ArrayBuffer) {
+        const buffer = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
+        this.handleIncomingWireBytes(buffer);
+      } else {
+        const event = { data } as MessageEvent;
+        this.handleIncoming(event);
+      }
     });
 
     conn.on('close', () => {
       this.webrtcConnections.delete(conn.peer);
     });
-    
+
     conn.on('error', () => {
       this.webrtcConnections.delete(conn.peer);
     });
@@ -177,7 +221,7 @@ export class MeshNode {
       const res = await fetch(url);
       if (!res.ok) return;
       const peers: string[] = await res.json();
-      
+
       for (const peerId of peers) {
         if (peerId !== this.peerjsId && !this.webrtcConnections.has(peerId)) {
           console.log('[MeshNode] Discovered new peer via Signaling Server:', peerId);
@@ -194,10 +238,25 @@ export class MeshNode {
   public async broadcast<T>(payload: T, type: PacketType = 'DATA', targetId?: string, ttl = 5): Promise<void> {
     const packetId = crypto.randomUUID();
     let finalPayload = payload;
-    
+
     if (payload instanceof Uint8Array && this.encryptionKey) {
       try {
         finalPayload = (await sealPayload(payload, this.encryptionKey, this.id)) as unknown as T;
+
+        // Construct standardized binary wire frame and dispatch across active native/browser transport
+        const wireFrame = await createWirePacket({
+          packetId,
+          senderId: this.id,
+          recipientId: targetId,
+          ttl,
+          type,
+          plaintextPayload: payload,
+          passphrase: this.encryptionKey,
+        });
+
+        this.transport.send(wireFrame).catch((err) => {
+          console.warn('[MeshNode] Transport send error:', err);
+        });
       } catch (err) {
         console.error('[MeshNode] Encryption failed, dropping packet:', err);
         return;
@@ -209,10 +268,10 @@ export class MeshNode {
       payload: finalPayload,
     };
     this.cache.add(packetId);
-    
+
     // Broadcast locally
     this.channel.postMessage(packet);
-    
+
     // Broadcast over WebRTC
     for (const conn of this.webrtcConnections.values()) {
       try {
@@ -272,9 +331,46 @@ export class MeshNode {
     this.cache.destroy();
     this.channel.close();
     this.peerjs?.destroy();
+    this.transport.stop().catch(() => {});
   }
 
-  // ── Private ───────────────────────────────────────────────────────────────
+  // ── Private Handlers ──────────────────────────────────────────────────────
+
+  /**
+   * Handles incoming raw binary wire packets from BLE or BroadcastChannel.
+   * Relays without decrypting, and delivers locally if addressed to us.
+   */
+  public async handleIncomingWireBytes(buffer: Uint8Array): Promise<void> {
+    // 1. Fast zero-knowledge relaying: mutate TTL/copiesLeft and re-broadcast with ZERO crypto!
+    const relayed = relayWirePacket(buffer, this.id);
+    if (relayed) {
+      this.transport.send(relayed).catch(() => {});
+      this.channel.postMessage(relayed);
+      for (const conn of this.webrtcConnections.values()) {
+        try {
+          conn.send(relayed);
+        } catch {}
+      }
+    }
+
+    // 2. Unpack for local delivery if destination matches or broadcast
+    const unpacked = await unpackWirePacket(buffer, this.encryptionKey, this.id);
+    if (unpacked && unpacked.isForUs && unpacked.decryptedPayload) {
+      this.touchPeer(unpacked.header.senderId);
+      this.packetsReceived++;
+      this.emitPacket({
+        header: {
+          packetId: unpacked.header.packetId,
+          senderId: unpacked.header.senderId,
+          targetId: unpacked.header.recipientId,
+          ttl: unpacked.header.ttl,
+          timestamp: unpacked.header.timestamp,
+          type: unpacked.header.type,
+        },
+        payload: unpacked.decryptedPayload,
+      });
+    }
+  }
 
   private async handleIncoming(event: MessageEvent): Promise<void> {
     const rawData = event.data;
@@ -282,35 +378,7 @@ export class MeshNode {
     // Handle binary wire frames directly if transmitted over WebRTC / BroadcastChannel
     if (rawData instanceof Uint8Array || rawData instanceof ArrayBuffer) {
       const buffer = rawData instanceof ArrayBuffer ? new Uint8Array(rawData) : rawData;
-
-      // 1. Fast zero-knowledge relaying: mutate TTL/copiesLeft and re-broadcast with ZERO crypto!
-      const relayed = relayWirePacket(buffer, this.id);
-      if (relayed) {
-        this.channel.postMessage(relayed);
-        for (const conn of this.webrtcConnections.values()) {
-          try {
-            conn.send(relayed);
-          } catch {}
-        }
-      }
-
-      // 2. Unpack for local delivery if destination matches or broadcast
-      const unpacked = await unpackWirePacket(buffer, this.encryptionKey, this.id);
-      if (unpacked && unpacked.isForUs && unpacked.decryptedPayload) {
-        this.touchPeer(unpacked.header.senderId);
-        this.packetsReceived++;
-        this.emitPacket({
-          header: {
-            packetId: unpacked.header.packetId,
-            senderId: unpacked.header.senderId,
-            targetId: unpacked.header.recipientId,
-            ttl: unpacked.header.ttl,
-            timestamp: unpacked.header.timestamp,
-            type: unpacked.header.type,
-          },
-          payload: unpacked.decryptedPayload,
-        });
-      }
+      await this.handleIncomingWireBytes(buffer);
       return;
     }
 
@@ -333,7 +401,7 @@ export class MeshNode {
 
     if (type === 'DATA') {
       this.packetsReceived++;
-      
+
       // Epidemic Gossip Protocol: Relay multi-hop traffic (SYNCHRONOUSLY, WITHOUT DECRYPTING)
       if (targetId === this.id) {
         // Do not relay packets explicitly targeting us
@@ -366,14 +434,10 @@ export class MeshNode {
         }
       }
     }
-
-    // ACK is handled here in future; HEARTBEAT just updates lastSeen above.
   }
 
   /**
    * Records or refreshes a peer's presence.
-   * Only emits a nodeList event on *new* peers to avoid flooding listeners
-   * with a rebuild on every heartbeat from existing peers.
    */
   private touchPeer(peerId: string): void {
     const isNew = !this.peers.has(peerId);
@@ -392,7 +456,6 @@ export class MeshNode {
 
   /**
    * Removes peers whose last heartbeat is older than PEER_TIMEOUT_MS.
-   * Emits a nodeList event only when at least one peer was actually removed.
    */
   private pruneSilentPeers(): void {
     const now = Date.now();
